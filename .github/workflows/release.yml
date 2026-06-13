@@ -9,8 +9,44 @@ permissions:
   contents: write
 
 jobs:
+  # 验证：确保打 tag 的 main 已经过 lint、race test、frontend build
+  # release job 强依赖此 job，verify 失败则不发版
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          # 读 web/package.json 的 engines.node 字段（当前 ">=18"），
+          # 自动选择满足约束的最新 LTS Node 版本。
+          # 与 setup-go 读 go.mod 同样的"单一来源"模式，避免硬编码脱节。
+          node-version-file: web/package.json
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+
+      - name: Run tests
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: Build frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
   release:
     name: Build & Release
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +59,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version-file: web/package.json
           cache: npm
           cache-dependency-path: web/package-lock.json
 
@@ -43,7 +79,7 @@ jobs:
         run: sha256sum *.tar.gz > sha256sums.txt
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v2.6.2
         with:
           generate_release_notes: true
           files: |
