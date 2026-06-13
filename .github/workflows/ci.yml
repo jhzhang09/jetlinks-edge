@@ -13,6 +13,10 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    # 依赖 build-frontend：web/embed.go 用 //go:embed all:dist 嵌入前端
+    # 构建产物，typecheck 阶段要求 web/dist 必须存在。不依赖则 lint 会报
+    # "pattern all:dist: no matching files found"。
+    needs: build-frontend
     steps:
       - uses: actions/checkout@v6
 
@@ -28,7 +32,9 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    needs: lint
+    # 同样依赖 build-frontend：test 包含 cmd/jetlinks-edge 与 internal/web
+    # 包，它们 import web.DistFS，go test 阶段也要 typecheck web/embed.go。
+    needs: [build-frontend, lint]
     steps:
       - uses: actions/checkout@v6
 
