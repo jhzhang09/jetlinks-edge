@@ -5,6 +5,35 @@
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-14 · Embedded Web Edition
+
+### 新增
+- **前端静态资源内嵌到二进制**（`web/embed.go` 使用 `//go:embed all:dist`），单文件部署，无需外置 web 目录
+- `Makefile` 在 `web/dist` 缺失时自动触发 `make web` 前置构建
+- `install.sh` 简化部署流程：二进制自包含前端，不再单独拷贝 `web/dist` 目录；`config.yaml` 中 `web.static_dir` 留空即启用内嵌模式
+
+### 改进
+- **SPA 兼容性优化**：`internal/web/server.go` 改用 `fs.ReadFile` 读取 `index.html` 字节流直接输出，避免 `http.FileServer` 在 SPA 路由下的 URL 美化重定向循环
+- `/assets` 静态资源路径精确映射到 `dist/assets` 子目录
+- `scripts/build-bundle.sh` 同步移除冗余的 `web/dist` 拷贝逻辑（已通过 `go:embed` 编译期嵌入）
+
+### 依赖与工具链
+- 升级 `gin-gonic/gin` 1.9.1 → 1.12.0
+- 升级 `golang-jwt/jwt/v5` 5.2.2 → 5.3.1
+- 升级 `spf13/viper` 1.18.2 → 1.21.0
+- 升级 `go.uber.org/zap` 1.27.0 → 1.28.0
+- 升级 `golang.org/x/crypto` 0.45.0 → 0.53.0
+- 升级 `gorm.io/gorm` 1.25.10 → 1.31.1
+- 升级 `gin-contrib/cors` 1.6.0 → 1.7.7
+- 间接依赖：`fsnotify` 1.7.0 → 1.9.0、`gin-contrib/sse` 0.1.0 → 1.1.0、`sonic` 1.11.2 → 1.15.0 等
+
+### 已知问题（不阻塞发布）
+- `quic-go` 0.59.0（间接依赖，由 `gopcua/opcua` 引入）存在 **CVE-2026-40898**（GHSA-vvgj-x9jq-8cj9），Dependabot 仍 open 中。`quic-go` 在本项目中仅作为 OPC-UA 客户端的间接依赖，未来如启用 OPC-UA over QUIC 需关注；当前使用 TCP 传输不受影响。
+
+### 工程化
+- GitHub Actions 升级到 Node 24 兼容版本：`actions/checkout@v4 → @v6`、`actions/setup-go@v5 → @v6`、`actions/setup-node@v4 → @v6`、`actions/upload-artifact@v4 → @v7`、`softprops/action-gh-release@v2.6.2 → @v3`、`golangci/golangci-lint-action@v9 → @v9.2.1`
+- ci.yml 修复 lint/test job 的 `web/dist` 依赖：通过 `actions/upload-artifact` 在 `build-frontend` 阶段上传 `web/dist`，`lint` 与 `test` 通过 `actions/download-artifact` 拉回本地（单纯 `needs: build-frontend` 不够，因为各 job 独立 runner + `actions/checkout@v6` 默认 `clean: true`）
+
 ## [0.4.0] - 2026-06-14 · Industrial Terminal Edition
 
 ### 新增
@@ -68,7 +97,8 @@
 - 北向 MQTT 客户端上送
 - Vue 3 + Vite + Naive UI Web 管理控制台
 
-[Unreleased]: https://github.com/jhzhang09/jetlinks-edge/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/jhzhang09/jetlinks-edge/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/jhzhang09/jetlinks-edge/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/jhzhang09/jetlinks-edge/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jhzhang09/jetlinks-edge/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jhzhang09/jetlinks-edge/compare/v0.1.0...v0.2.0
