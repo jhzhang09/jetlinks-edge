@@ -26,6 +26,10 @@ all: web build
 
 build:
 	mkdir -p bin
+	@if [ ! -d "web/dist" ]; then \
+		echo "web/dist not found, building frontend first..."; \
+		$(MAKE) web; \
+	fi
 	CGO_ENABLED=0 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN) ./cmd/jetlinks-edge
 	@if command -v upx >/dev/null 2>&1; then \
 		echo "Compressing $(BIN) with UPX..."; \

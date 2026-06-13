@@ -25,6 +25,7 @@ package web
 
 import (
 	"context"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -40,6 +41,7 @@ import (
 	"github.com/jhzhang09/jetlinks-edge/internal/store"
 	"github.com/jhzhang09/jetlinks-edge/internal/web/handler"
 	"github.com/jhzhang09/jetlinks-edge/internal/web/middleware"
+	webassets "github.com/jhzhang09/jetlinks-edge/web"
 )
 
 // Server HTTP 服务。
@@ -136,8 +138,9 @@ func New(cfg *config.Config, st *store.Store, runner *core.Runner) *Server {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
-	// 静态前端
+	// 静态前端提供逻辑
 	if cfg.Web.StaticDir != "" {
+		// 1. 开发模式：使用外部磁盘路径提供静态文件
 		abs, _ := filepath.Abs(cfg.Web.StaticDir)
 		if _, err := os.Stat(abs); err == nil {
 			r.Static("/assets", filepath.Join(abs, "assets"))
@@ -150,6 +153,32 @@ func New(cfg *config.Config, st *store.Store, runner *core.Runner) *Server {
 					return
 				}
 				c.File(filepath.Join(abs, "index.html"))
+			})
+		}
+	} else {
+		// 2. 生产模式：使用 embed 嵌入的静态资源提供服务（最佳实践）
+		subFS, err := fs.Sub(webassets.DistFS, "dist")
+		if err == nil {
+			httpFS := http.FS(subFS)
+
+			// 挂载 /assets 静态目录
+			r.StaticFS("/assets", httpFS)
+
+			// 挂载首页路由
+			r.GET("/", func(c *gin.Context) {
+				c.FileFromFS("index.html", httpFS)
+			})
+			r.GET("/index.html", func(c *gin.Context) {
+				c.FileFromFS("index.html", httpFS)
+			})
+
+			// 针对单页应用 (SPA) 进行 NoRoute 兜底处理
+			r.NoRoute(func(c *gin.Context) {
+				if strings.HasPrefix(c.Request.URL.Path, "/api") {
+					c.JSON(404, gin.H{"error": "not found"})
+					return
+				}
+				c.FileFromFS("index.html", httpFS)
 			})
 		}
 	}

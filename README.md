@@ -301,22 +301,20 @@ func Register(r *core.NorthRegistry) {
 适合：本地测试、单台小机器、内网工控机。
 
 ```bash
-# 1. 在本地构建（macOS/Linux 均可）
-go build -ldflags="-s -w" -o bin/jetlinks-edge ./cmd/jetlinks-edge
+# 1. 在本地构建前端并编译后端二进制（因为 Go 编译时需要读取嵌入的前端资源，所以必须先构建前端）
 cd web && npm install --no-audit --no-fund && npm run build && cd ..
+go build -ldflags="-s -w" -o bin/jetlinks-edge ./cmd/jetlinks-edge
 
-# 2. 准备发布目录
+# 2. 准备发布目录（只需拷贝二进制和配置文件，不再需要拷贝 web 目录！）
 mkdir -p deploy
 cp bin/jetlinks-edge deploy/
-cp -r web/dist deploy/
 cp config.yaml deploy/config.yaml
-sed -i 's|static_dir:.*|static_dir: "web/dist"|' deploy/config.yaml
 
-# 3. 打包并传
+# 3. 打包并传输
 tar czf jetlinks-edge.tar.gz -C deploy .
 scp jetlinks-edge.tar.gz user@server:/tmp/
 
-# 4. 服务器上启动
+# 4. 服务器上启动（config.yaml 中的 static_dir 默认留空即可）
 ssh user@server
 tar xzf /tmp/jetlinks-edge.tar.gz -C /opt/
 cd /opt
@@ -341,8 +339,8 @@ make bundle-all   # → 全部平台打包（见下方全平台发布）
 
 ```
 edge-bundle/
-├── bin/jetlinks-edge    # Go 二进制
-├── web/dist/            # 前端产物
+├── bin/jetlinks-edge    # Go 二进制（已内含前端静态页面）
+├── web/dist/            # 前端打包产物（可作为备用调试使用，安装时默认不部署）
 ├── scripts/
 │   ├── install.sh       # 一键安装
 │   ├── uninstall.sh     # 一键卸载
@@ -417,13 +415,12 @@ docker compose logs -f jetlinks-edge
 适合：物理机 / VM、不装 Docker、但要进程托管。
 
 ```bash
-sudo mkdir -p /opt/jetlinks-edge/{data,web}
-sudo cp jetlinks-edge /opt/jetlinks-edge/
-sudo cp -r web/dist /opt/jetlinks-edge/web/
+sudo mkdir -p /opt/jetlinks-edge/data
+sudo cp jetlinks-edge config.yaml /opt/jetlinks-edge/
 sudo useradd -r -s /bin/false jetlinks
 sudo chown -R jetlinks:jetlinks /opt/jetlinks-edge
 
-# 写入 /etc/systemd/system/jetlinks-edge.service（见 install.sh 中的模板）
+# 写入 /etc/systemd/system/jetlinks-edge.service（见 install.sh 中的模板，注意 ReadWritePaths 只需保留 /opt/jetlinks-edge/data 即可）
 sudo systemctl daemon-reload
 sudo systemctl enable --now jetlinks-edge
 journalctl -u jetlinks-edge -f

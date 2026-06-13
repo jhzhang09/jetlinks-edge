@@ -9,8 +9,10 @@ web:
   token_ttl: 24h
   default_user: admin
   default_password: admin123
-  # 生产环境指向构建产物的 web/dist 目录；dev 环境留空，由 vite 代理
-  static_dir: "web/dist"
+  # 前端静态文件目录：
+  #   - 留空 "" (推荐): 启用生产模式，直接使用嵌入到二进制包中的前端资源
+  #   - 指定路径 (如 "web/dist"): 使用外部磁盘上的前端静态资源文件，便于本地开发调试
+  static_dir: ""
 
 log:
   level: info

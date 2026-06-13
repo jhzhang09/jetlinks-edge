@@ -50,10 +50,9 @@ fi
 
 # 2. 建目录并复制文件
 echo "[2/5] installing files to $PREFIX ..."
-mkdir -p "$PREFIX" "$PREFIX/data" "$PREFIX/web"
+mkdir -p "$PREFIX" "$PREFIX/data"
 cp -f "$BUNDLE_ROOT/bin/jetlinks-edge" "$PREFIX/jetlinks-edge"
 chmod +x "$PREFIX/jetlinks-edge"
-cp -r "$BUNDLE_ROOT/web/." "$PREFIX/web/"
 
 # 3. 生成 config.yaml（绝对路径，避免 cwd 问题）
 cat > "$PREFIX/config.yaml" <<EOF
@@ -64,7 +63,8 @@ web:
   token_ttl: 24h
   default_user: admin
   default_password: admin123
-  static_dir: "${PREFIX}/web/dist"
+  # 默认使用内嵌前端静态文件。若需使用外置资源调试，可填写目录路径（如 "${PREFIX}/web/dist"）
+  static_dir: ""
 
 log:
   level: info
@@ -110,7 +110,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=${PREFIX}/data ${PREFIX}/web
+ReadWritePaths=${PREFIX}/data
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
@@ -135,7 +135,6 @@ echo
 echo "=== install complete ==="
 echo "  binary:   ${PREFIX}/jetlinks-edge"
 echo "  config:   ${PREFIX}/config.yaml"
-echo "  data:     ${PREFIX}/data/"
-echo "  web/dist: ${PREFIX}/web/dist/"
-echo "  web URL:  http://<server-ip>:${WEB_PORT}"
+echo "  data:     ${PREFIX}/data/ (DB / SQLite 存储目录)"
+echo "  web URL:  http://<server-ip>:${WEB_PORT} (由二进制内嵌提供服务)"
 echo "  login:    admin / admin123"
