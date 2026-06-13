@@ -157,30 +157,34 @@ func New(cfg *config.Config, st *store.Store, runner *core.Runner) *Server {
 		}
 	} else {
 		// 2. 生产模式：使用 embed 嵌入的静态资源提供服务（最佳实践）
-		subFS, err := fs.Sub(webassets.DistFS, "dist")
+		assetsFS, err := fs.Sub(webassets.DistFS, "dist/assets")
 		if err == nil {
-			httpFS := http.FS(subFS)
-
-			// 挂载 /assets 静态目录
-			r.StaticFS("/assets", httpFS)
-
-			// 挂载首页路由
-			r.GET("/", func(c *gin.Context) {
-				c.FileFromFS("index.html", httpFS)
-			})
-			r.GET("/index.html", func(c *gin.Context) {
-				c.FileFromFS("index.html", httpFS)
-			})
-
-			// 针对单页应用 (SPA) 进行 NoRoute 兜底处理
-			r.NoRoute(func(c *gin.Context) {
-				if strings.HasPrefix(c.Request.URL.Path, "/api") {
-					c.JSON(404, gin.H{"error": "not found"})
-					return
-				}
-				c.FileFromFS("index.html", httpFS)
-			})
+			// 将 /assets 静态路由映射到嵌入文件系统的 dist/assets 子目录
+			r.StaticFS("/assets", http.FS(assetsFS))
 		}
+
+		// 统一处理 index.html 的提供，直接读取其字节流输出，防止 http.FileServer 产生 URL 美化重定向循环
+		serveIndex := func(c *gin.Context) {
+			data, err := fs.ReadFile(webassets.DistFS, "dist/index.html")
+			if err != nil {
+				c.String(http.StatusInternalServerError, "Internal Server Error")
+				return
+			}
+			c.Data(http.StatusOK, "text/html; charset=utf-8", data)
+		}
+
+		// 挂载首页路由
+		r.GET("/", serveIndex)
+		r.GET("/index.html", serveIndex)
+
+		// 针对单页应用 (SPA) 进行 NoRoute 兜底处理
+		r.NoRoute(func(c *gin.Context) {
+			if strings.HasPrefix(c.Request.URL.Path, "/api") {
+				c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+				return
+			}
+			serveIndex(c)
+		})
 	}
 
 	return &Server{
