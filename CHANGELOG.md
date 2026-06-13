@@ -5,7 +5,7 @@
 
 ## [Unreleased]
 
-## [0.4.0] - 2024 · Industrial Terminal Edition
+## [0.4.0] - 2026-06-14 · Industrial Terminal Edition
 
 ### 新增
 - ☀️ 白天 / 🌙 夜间高对比度主题切换（默认夜间主题）
@@ -18,9 +18,29 @@
 - 优化新增/编辑表单输入框的垂直间距与紧凑排版
 - 引入本地构建的 `upx` 检测与自动安全降级机制
 
+### 安全
+- 升级 `eclipse/paho.mqtt.golang` 1.4.0 → 1.5.1，修复 **CVE-2025-10543**（topic 字段编码错误导致数据泄露）
+- 升级 `jackc/pgx/v5` 5.6.0 → 5.9.2，修复 **GHSA-j88v-2ch3-qfwx**（simple protocol + dollar-quoted 场景下的 SQL 注入）
+- 升级 `golang-jwt/jwt/v5` 5.2.0 → 5.2.2，修复 **GHSA-mh63-6h87-95cp** 安全公告
+- 升级 `golang.org/x/crypto` 0.31.0 → 0.45.0、升级 `golang.org/x/net` 0.21.0 → 0.47.0，覆盖周期内多个高危 CVE
+
+### 依赖与工具链
+- 升级 `golang.org/x/sync` 0.10.0 → 0.18.0、`golang.org/x/sys` 0.28.0 → 0.38.0、`golang.org/x/text` 0.21.0 → 0.31.0
+- 升级 `google.golang.org/protobuf` 1.31.0 → 1.33.0
+- 升级 `gin-contrib/cors` 1.5.0 → 1.6.0（修复 wildcard domain 解析 bug）
+- 升级前端 `vite` 5.4.21 → 8.0.16、`@vitejs/plugin-vue` 5.2.4 → 6.0.7，移除不再使用的 `esbuild`
+- `go.mod` 升级 `go` 指令从 1.23.0 → 1.25.0（pgx 5.9 要求）
+
 ### 修复
 - 修复侧边栏最底部展开/收起折叠按钮失效的 Bug
 - 修复白天主题下普通事件日志及总览表格文字偏白导致无法辨识的问题
+- 修复 `internal/core` 测试中的 data race（mock North 处理器加锁）
+- 修复 `web/vite.config.ts` 在 vite 8 + rolldown 下的 `manualChunks` 类型不兼容（改为 ManualChunksFunction）
+
+### 工程化
+- 升级 `golangci-lint` v1.64.8 → v2.12.2 + `golangci-lint-action` v6 → v9；清理 v2 默认规则暴露的 22 个历史 lint 问题（errcheck 9、staticcheck 2、unused 11）
+- GitHub Actions 全面改用 `go-version-file: go.mod` 与 `node-version-file: web/package.json`，版本号单一来源 = 配置文件本身
+- release workflow 增加 `verify` 依赖（lint + race test + frontend build），发版前自动门禁
 
 ## [0.3.0]
 
