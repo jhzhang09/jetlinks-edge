@@ -7,7 +7,7 @@ require (
 	github.com/gin-contrib/cors v1.6.0
 	github.com/gin-gonic/gin v1.9.1
 	github.com/glebarez/sqlite v1.11.0
-	github.com/golang-jwt/jwt/v5 v5.2.0
+	github.com/golang-jwt/jwt/v5 v5.2.2
 	github.com/google/uuid v1.6.0
 	github.com/gopcua/opcua v0.8.0
 	github.com/piligo/gmsm v0.0.0-20211029152537-caf9e9eacebc
