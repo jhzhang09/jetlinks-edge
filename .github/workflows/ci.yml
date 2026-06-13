@@ -14,11 +14,15 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     # 依赖 build-frontend：web/embed.go 用 //go:embed all:dist 嵌入前端
-    # 构建产物，typecheck 阶段要求 web/dist 必须存在。不依赖则 lint 会报
-    # "pattern all:dist: no matching files found"。
+    # 构建产物，typecheck 阶段要求 web/dist 必须存在。
     needs: build-frontend
     steps:
       - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: web-dist
+          path: web/dist
 
       - uses: actions/setup-go@v6
         with:
@@ -37,6 +41,11 @@ jobs:
     needs: [build-frontend, lint]
     steps:
       - uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: web-dist
+          path: web/dist
 
       - uses: actions/setup-go@v6
         with:
@@ -71,3 +80,14 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # 把 web/dist 上传为 artifact，让 lint 与 test 下载复用。
+      # 关键：lint/test 各自独立的 runner 上 actions/checkout@v6 默认
+      # clean: true，会删除整个 workspace，所以单纯 needs: build-frontend
+      # 是不够的——必须用 artifact 跨 job 传递文件。
+      - name: Upload dist
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
