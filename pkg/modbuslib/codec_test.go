@@ -11,8 +11,8 @@ import (
 
 func TestRequestRejectsMismatchedTransactionID(t *testing.T) {
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = server.Close() }()
 
 	c := NewTCPClient("unused", 0, 1, time.Second, 0)
 	c.conn = client
@@ -30,8 +30,8 @@ func TestRequestRejectsMismatchedTransactionID(t *testing.T) {
 
 func TestReadDiscreteInputsRejectsTruncatedBody(t *testing.T) {
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = server.Close() }()
 
 	c := NewTCPClient("unused", 0, 1, time.Second, 0)
 	c.conn = client

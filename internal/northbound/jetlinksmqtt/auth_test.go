@@ -51,7 +51,8 @@ func TestBuildAuth_KnownVectors(t *testing.T) {
 				t.Errorf("password length = %d, want 32", len(p))
 			}
 			for _, c := range p {
-				if !((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F')) {
+				// 字符既不是十进制数字也不是大写十六进制字母
+				if (c < '0' || c > '9') && (c < 'A' || c > 'F') {
 					t.Errorf("password contains non-hex char: %q", string(c))
 					break
 				}
@@ -96,7 +97,8 @@ func TestBuildAuth_TimestampChanges(t *testing.T) {
 	}
 	// 验证 password 仅含大写十六进制
 	for _, c := range p1 {
-		if !((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F')) {
+		// 字符既不是十进制数字也不是大写十六进制字母
+		if (c < '0' || c > '9') && (c < 'A' || c > 'F') {
 			t.Errorf("non-hex char in password: %q", string(c))
 			break
 		}

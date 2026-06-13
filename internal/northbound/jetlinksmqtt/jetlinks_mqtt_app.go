@@ -292,7 +292,9 @@ type app struct {
 
 type pending struct {
 	cmd core.NorthCommand
-	rep chan core.NorthCommandReply
+	// 注：早期版本预留 rep 字段用于同步等待 reply，2026-06 升级
+	// golangci-lint v2 后被 unused 规则标红。当前所有调用方走 pendCh
+	// 异步收 reply，不需要此字段。删除以通过 lint。
 }
 
 type NorthReply = core.NorthCommandReply
@@ -762,27 +764,6 @@ func (a *app) State() *core.NorthState {
 func topicPropertiesReport(productID, deviceID string) string {
 	return fmt.Sprintf("/%s/%s/properties/report", productID, deviceID)
 }
-func topicPropertiesRead(productID, deviceID string) string {
-	return fmt.Sprintf("/%s/%s/properties/read", productID, deviceID)
-}
-func topicPropertiesWrite(productID, deviceID string) string {
-	return fmt.Sprintf("/%s/%s/properties/write", productID, deviceID)
-}
-func topicFunctionInvoke(productID, deviceID string) string {
-	return fmt.Sprintf("/%s/%s/function/invoke", productID, deviceID)
-}
-func topicReadReply(productID, deviceID string) string {
-	return fmt.Sprintf("/%s/%s/properties/read/reply", productID, deviceID)
-}
-func topicWriteReply(productID, deviceID string) string {
-	return fmt.Sprintf("/%s/%s/properties/write/reply", productID, deviceID)
-}
-func topicInvokeReply(productID, deviceID string) string {
-	return fmt.Sprintf("/%s/%s/function/invoke/reply", productID, deviceID)
-}
-func topicEvent(productID, deviceID, eventID string) string {
-	return fmt.Sprintf("/%s/%s/event/%s", productID, deviceID, eventID)
-}
 
 // 网关子设备 topic（当前模式）
 func topicChildPropertiesReport(gwProductID, gwDeviceID, childDeviceID string) string {
@@ -809,14 +790,8 @@ func topicChildInvokeReply(gwProductID, gwDeviceID, childDeviceID string) string
 func topicChildRegister(gwProductID, gwDeviceID, childDeviceID string) string {
 	return fmt.Sprintf("/%s/%s/child/%s/register", gwProductID, gwDeviceID, childDeviceID)
 }
-func topicChildUnregister(gwProductID, gwDeviceID, childDeviceID string) string {
-	return fmt.Sprintf("/%s/%s/child/%s/unregister", gwProductID, gwDeviceID, childDeviceID)
-}
 func topicChildOnline(gwProductID, gwDeviceID, childDeviceID string) string {
 	return fmt.Sprintf("/%s/%s/child/%s/online", gwProductID, gwDeviceID, childDeviceID)
-}
-func topicChildOffline(gwProductID, gwDeviceID, childDeviceID string) string {
-	return fmt.Sprintf("/%s/%s/child/%s/offline", gwProductID, gwDeviceID, childDeviceID)
 }
 
 // deviceChildTopics 返回某子设备需要订阅的全部下行主题（按官方协议）。

@@ -458,18 +458,6 @@ func closeNorthApp(app *northAppRuntime) {
 	}
 }
 
-// lookupNorthLocked 内部：从池里查实例（不加锁，调用方需持锁）。
-// 注意：返回的 handler 可能为 nil（应用被停用/不存在）。
-func (r *Runner) lookupNorthLocked(appID string) NorthHandler {
-	if appID == "" {
-		return nil
-	}
-	if nr, ok := r.northApps[appID]; ok {
-		return nr.handler
-	}
-	return nil
-}
-
 // lookupNorthsLocked 内部：从池里查一组实例，解析逗号分隔的北向应用 ID 列表（不加锁，调用方需持锁）。
 func (r *Runner) lookupNorthsLocked(appIDs string) []NorthHandler {
 	if appIDs == "" {

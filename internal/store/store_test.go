@@ -20,7 +20,7 @@ func TestStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	dbPath := filepath.Join(tmpDir, "subfolder", "edge.db") // 顺便测试自动创建父目录逻辑
 	cfg := config.StorageConfig{

@@ -33,7 +33,7 @@ func TestInit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	logPath := filepath.Join(tmpDir, "test-edge.log")
 	if err := Init("info", "file:"+logPath); err != nil {

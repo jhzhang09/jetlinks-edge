@@ -210,7 +210,7 @@ func (c *TCPClient) requestWithSlaveID(slaveID byte, pdu []byte) ([]byte, error)
 
 	_ = c.conn.SetDeadline(time.Now().Add(c.timeout))
 	if _, err := c.conn.Write(frame); err != nil {
-		c.conn.Close()
+		_ = c.conn.Close()
 		c.conn = nil
 		return nil, fmt.Errorf("write modbus: %w", err)
 	}
@@ -218,7 +218,7 @@ func (c *TCPClient) requestWithSlaveID(slaveID byte, pdu []byte) ([]byte, error)
 	// 读 MBAP 头
 	rhdr := make([]byte, 7)
 	if _, err := io.ReadFull(c.conn, rhdr); err != nil {
-		c.conn.Close()
+		_ = c.conn.Close()
 		c.conn = nil
 		return nil, fmt.Errorf("read mbap: %w", err)
 	}
@@ -237,7 +237,7 @@ func (c *TCPClient) requestWithSlaveID(slaveID byte, pdu []byte) ([]byte, error)
 	}
 	body := make([]byte, plen-1) // 已读 1 字节 (UID)
 	if _, err := io.ReadFull(c.conn, body); err != nil {
-		c.conn.Close()
+		_ = c.conn.Close()
 		c.conn = nil
 		return nil, fmt.Errorf("read body: %w", err)
 	}
