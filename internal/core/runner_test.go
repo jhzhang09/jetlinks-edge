@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -140,16 +141,29 @@ func (d *collectDriver) Status() DriverStatus {
 }
 
 type recordingNorth struct {
+	mu       sync.Mutex
 	messages []NorthMessage
 }
 
 func (n *recordingNorth) OnMessage(_ context.Context, msg NorthMessage) error {
+	n.mu.Lock()
 	n.messages = append(n.messages, msg)
+	n.mu.Unlock()
 	return nil
 }
 
 func (n *recordingNorth) OnCommand(context.Context, NorthCommand) (NorthCommandReply, error) {
 	return NorthCommandReply{}, nil
+}
+
+// snapshot 线程安全地返回当前所有收到的消息副本。
+// 测试主协程用它来读，避免与 OnMessage 的 append 产生 data race。
+func (n *recordingNorth) snapshot() []NorthMessage {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	out := make([]NorthMessage, len(n.messages))
+	copy(out, n.messages)
+	return out
 }
 
 func TestExecuteNorthCommandReadsAndWritesTags(t *testing.T) {
@@ -246,8 +260,8 @@ func TestCollectOnceSkipsNorthReportWhenNoGoodValues(t *testing.T) {
 		norths: []NorthHandler{north},
 	})
 
-	if len(north.messages) != 0 {
-		t.Fatalf("north messages = %d, want 0", len(north.messages))
+	if len(north.snapshot()) != 0 {
+		t.Fatalf("north messages = %d, want 0", len(north.snapshot()))
 	}
 	values := runner.LastValues(group.ID)
 	if values["temperature"].Quality != QualityBad {
@@ -294,12 +308,13 @@ func TestCollectOnceReportsOnlyGoodQualityValues(t *testing.T) {
 	// 等待一小会儿确保协程消费完毕
 	time.Sleep(10 * time.Millisecond)
 
-	if len(north.messages) != 1 {
-		t.Fatalf("north messages = %d, want 1", len(north.messages))
+	msgs := north.snapshot()
+	if len(msgs) != 1 {
+		t.Fatalf("north messages = %d, want 1", len(msgs))
 	}
-	properties, ok := north.messages[0].Payload["properties"].(map[string]interface{})
+	properties, ok := msgs[0].Payload["properties"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("properties payload type = %T, want map[string]interface{}", north.messages[0].Payload["properties"])
+		t.Fatalf("properties payload type = %T, want map[string]interface{}", msgs[0].Payload["properties"])
 	}
 	if len(properties) != 1 || properties["temperature"] != 25 {
 		t.Fatalf("properties = %#v, want only temperature=25", properties)
@@ -308,9 +323,9 @@ func TestCollectOnceReportsOnlyGoodQualityValues(t *testing.T) {
 		t.Fatalf("bad quality value must not be reported: %#v", properties)
 	}
 
-	changes, ok := north.messages[0].Payload["changes"].(map[string]interface{})
+	changes, ok := msgs[0].Payload["changes"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("changes payload type = %T, want map[string]interface{}", north.messages[0].Payload["changes"])
+		t.Fatalf("changes payload type = %T, want map[string]interface{}", msgs[0].Payload["changes"])
 	}
 	if len(changes) != 1 || changes["temperature"] != 25 {
 		t.Fatalf("changes = %#v, want only temperature=25", changes)
@@ -437,16 +452,28 @@ func TestEventBusPublishSubscribe(t *testing.T) {
 }
 
 type mockNorthHandler struct {
+	mu       sync.Mutex
 	messages []NorthMessage
 }
 
 func (m *mockNorthHandler) OnMessage(ctx context.Context, msg NorthMessage) error {
+	m.mu.Lock()
 	m.messages = append(m.messages, msg)
+	m.mu.Unlock()
 	return nil
 }
 
 func (m *mockNorthHandler) OnCommand(ctx context.Context, cmd NorthCommand) (NorthCommandReply, error) {
 	return NorthCommandReply{}, nil
+}
+
+// snapshot 线程安全地返回当前所有收到的消息副本。
+func (m *mockNorthHandler) snapshot() []NorthMessage {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]NorthMessage, len(m.messages))
+	copy(out, m.messages)
+	return out
 }
 
 func TestRunnerIntegratesEventBus(t *testing.T) {
@@ -530,17 +557,18 @@ func TestRunnerIntegratesEventBus(t *testing.T) {
 	// 桥接的消费可能稍微有一点时延，这里等待一下
 	deadline := time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(northHandler.messages) > 0 {
+		if len(northHandler.snapshot()) > 0 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	if len(northHandler.messages) == 0 {
+	msgs := northHandler.snapshot()
+	if len(msgs) == 0 {
 		t.Fatal("northHandler did not receive bridged OnMessage call")
 	}
 
-	props := northHandler.messages[0].Payload["properties"].(map[string]interface{})
+	props := msgs[0].Payload["properties"].(map[string]interface{})
 	if props["tag-1"] != 88 {
 		t.Fatalf("northHandler received tag-1 = %v, want 88", props["tag-1"])
 	}
