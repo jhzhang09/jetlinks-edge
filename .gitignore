@@ -1,0 +1,43 @@
+# jetlinks-edge .gitignore
+#
+# 规则覆盖：构建产物、运行时数据、打包产物、本地缓存、IDE/OS 杂项。
+
+# ===== Go 构建产物 =====
+/bin/
+*.test
+*.out
+
+# 运行时数据
+/data/
+
+# 运行时日志
+*.log
+*.pid
+
+# ===== 前端构建产物与依赖 =====
+/web/dist/
+/web/dist.zip
+/web/node_modules/
+/web/tsconfig.tsbuildinfo
+# vite/rollup/esbuild 缓存
+/web/.vite/
+/web/.cache/
+
+# ===== 打包产物（make bundle / make bundle-all 产出） =====
+/deployments/
+
+# ===== 知识图谱缓存（graphify update 产出） =====
+/graphify-out/
+
+# ===== 开发临时文件 =====
+/scratch/
+/design-qa.md
+
+# ===== Playwright 缓存 =====
+/.playwright-cli/
+
+# ===== macOS / 通用杂项 =====
+.DS_Store
+*.swp
+.idea/
+.vscode/

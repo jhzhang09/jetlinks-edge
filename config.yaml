@@ -1,0 +1,30 @@
+# JetLinks Edge 默认配置（开发用）
+# 实际使用建议通过环境变量覆盖关键项：
+#   JETLINKS_EDGE_WEB_ADDR=0.0.0.0:7001
+#   JETLINKS_EDGE_STORAGE_DSN=/data/jetlinks-edge.db
+
+web:
+  addr: 0.0.0.0:7001
+  jwt_secret: jetlinks-edge-default-secret-change-me
+  token_ttl: 24h
+  default_user: admin
+  default_password: admin123
+  # 生产环境指向构建产物的 web/dist 目录；dev 环境留空，由 vite 代理
+  static_dir: "web/dist"
+
+log:
+  level: info
+  output: stdout
+
+storage:
+  driver: sqlite
+  # DSN 相对路径：解析为可执行文件所在目录的相对路径。
+  # 绝对路径直接使用（以 / 开头）。
+  # 例子：./bin/jetlinks-edge -c config.example.yaml  →  ./bin/data/jetlinks-edge.db
+  dsn: data/jetlinks-edge.db
+
+collector:
+  max_concurrency: 100
+  read_timeout: 3s
+  write_timeout: 3s
+  reconnect_delay: 5s

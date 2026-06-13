@@ -1,0 +1,7 @@
+.git
+.DS_Store
+bin
+deployments
+graphify-out
+web/dist
+web/node_modules
