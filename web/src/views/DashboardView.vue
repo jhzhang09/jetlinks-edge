@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useOperations } from '@/composables/useOperations'
 import { useI18n } from '@/i18n'
 import OpsTrendChart from '@/components/OpsTrendChart.vue'
+import { formatGoDateTime } from '@/utils/time'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -12,7 +13,7 @@ const warningAlarms = computed(() => data.value.alarms.filter(item => item.sever
 const ioCount = computed(() => data.value.groups.reduce((total, group) => total + Object.entries(group.stats || {}).reduce((sum, [key, value]) => key.startsWith('ok.') ? sum + value : sum, 0), 0))
 const ioErrors = computed(() => data.value.groups.reduce((total, group) => total + (group.stats?.err || 0), 0))
 const health = overallHealth
-function time(value?: string) { return !value || value.startsWith('0001-') ? '--' : new Date(value).toLocaleString() }
+const time = formatGoDateTime
 
 function getPluginStyle(type: string) {
   const t = type.toLowerCase()

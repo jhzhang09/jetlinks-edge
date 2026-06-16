@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
-import { useMessage } from 'naive-ui'
 import { useAuthStore } from '@/stores/auth'
 import { useI18n } from '@/i18n'
 import { useOperations } from '@/composables/useOperations'
 import { useThemeStore } from '@/stores/theme'
-import { changePassword } from '@/api'
+import ChangePasswordModal from '@/components/ChangePasswordModal.vue'
 
 const themeStore = useThemeStore()
 const { t, lang, toggleLang } = useI18n()
@@ -46,15 +45,7 @@ function active(path: string) { return path === '/groups' || path === '/connecti
 function logout() { auth.logout(); router.push('/login') }
 
 // --- 用户管理：修改密码功能 ---
-const message = useMessage()
 const showPasswordModal = ref(false)
-const submitLoading = ref(false)
-
-const formValue = ref({
-  oldPassword: '',
-  newPassword: '',
-  confirmPassword: ''
-})
 
 const dropdownOptions = computed(() => [
   { label: t('top.change_password'), key: 'password' },
@@ -65,45 +56,7 @@ function handleUserAction(key: string) {
   if (key === 'logout') {
     logout()
   } else if (key === 'password') {
-    formValue.value = {
-      oldPassword: '',
-      newPassword: '',
-      confirmPassword: ''
-    }
     showPasswordModal.value = true
-  }
-}
-
-async function submitPasswordChange() {
-  if (!formValue.value.oldPassword) {
-    message.error(t('top.old_password_required'))
-    return
-  }
-  if (!formValue.value.newPassword) {
-    message.error(t('top.new_password_required'))
-    return
-  }
-  if (formValue.value.newPassword !== formValue.value.confirmPassword) {
-    message.error(t('top.passwords_not_match'))
-    return
-  }
-  
-  submitLoading.value = true
-  try {
-    await changePassword({
-      oldPassword: formValue.value.oldPassword,
-      newPassword: formValue.value.newPassword
-    })
-    message.success(t('top.password_changed_success'))
-    showPasswordModal.value = false
-    setTimeout(() => {
-      logout()
-    }, 1500)
-  } catch (e: any) {
-    const errMsg = e?.response?.data?.error || t('top.password_changed_failed')
-    message.error(errMsg)
-  } finally {
-    submitLoading.value = false
   }
 }
 </script>
@@ -142,51 +95,7 @@ async function submitPasswordChange() {
     </main>
 
     <!-- 修改密码弹窗 -->
-    <n-modal
-      v-model:show="showPasswordModal"
-      preset="card"
-      style="width: 400px;"
-      :title="t('top.change_password_title')"
-      :bordered="false"
-      size="huge"
-      class="ops-dialog"
-    >
-      <n-form :model="formValue">
-        <n-form-item :label="t('top.old_password')">
-          <n-input
-            v-model:value="formValue.oldPassword"
-            type="password"
-            show-password-on="mousedown"
-            :placeholder="t('top.old_password_required')"
-          />
-        </n-form-item>
-        <n-form-item :label="t('top.new_password')">
-          <n-input
-            v-model:value="formValue.newPassword"
-            type="password"
-            show-password-on="mousedown"
-            :placeholder="t('top.new_password_required')"
-          />
-        </n-form-item>
-        <n-form-item :label="t('top.confirm_new_password')">
-          <n-input
-            v-model:value="formValue.confirmPassword"
-            type="password"
-            show-password-on="mousedown"
-            :placeholder="t('top.confirm_new_password_required')"
-            @keyup.enter="submitPasswordChange"
-          />
-        </n-form-item>
-      </n-form>
-      <template #action>
-        <div style="display: flex; justify-content: flex-end; gap: 12px;">
-          <n-button @click="showPasswordModal = false">{{ t('top.cancel') }}</n-button>
-          <n-button type="primary" :loading="submitLoading" @click="submitPasswordChange">
-            {{ t('top.submit') }}
-          </n-button>
-        </div>
-      </template>
-    </n-modal>
+    <ChangePasswordModal v-model:show="showPasswordModal" @success="logout" />
   </div>
 </template>
 

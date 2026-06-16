@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, h } from 'vue'
+import { computed, onMounted, onUnmounted, ref, h } from 'vue'
 import { useRouter } from 'vue-router'
 import { NButton, NInput, NInputNumber, NSelect, NSwitch, NSpace, useMessage, useDialog, NDataTable, NModal, NForm, NFormItem, NP, NCheckbox } from 'naive-ui'
 import {
@@ -117,14 +117,20 @@ async function loadStatus() {
   } catch {}
 }
 
+let statusInterval: number | undefined
 onMounted(() => {
   refresh()
   loadConnections()
   loadDrivers()
   loadNorthApps()
   loadStatus()
-  const interval = setInterval(loadStatus, 5000)
-  return () => clearInterval(interval)
+  statusInterval = window.setInterval(loadStatus, 5000)
+})
+
+onUnmounted(() => {
+  if (statusInterval) {
+    clearInterval(statusInterval)
+  }
 })
 
 function validateConfig(config: Record<string, any> | undefined, schema: any[]): boolean {

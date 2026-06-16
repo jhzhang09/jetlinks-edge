@@ -379,4 +379,15 @@ html[data-theme='light'] .ops-table td {
   color: var(--text) !important;
 }
 
+/* 白天模式下针对健康指标卡片 (.health-strip strong) 以及插件名称 (.plugin-name) 的文字对比度优化 */
+html[data-theme='light'] .health-strip strong {
+  color: var(--muted) !important;
+}
+html[data-theme='light'] .plugin-name {
+  color: #475569 !important;
+}
+html[data-theme='light'] .ops-title {
+  color: var(--text) !important;
+}
+
 

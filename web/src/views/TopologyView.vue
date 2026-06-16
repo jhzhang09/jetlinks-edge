@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useOperations } from '@/composables/useOperations'
 import { useI18n } from '@/i18n'
 import TopologyFlowCanvas from '@/components/TopologyFlowCanvas.vue'
+import { formatGoTime } from '@/utils/time'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -96,13 +97,22 @@ const topologyLinks = computed(() => {
   return links
 })
 function select(id: string) { selectedId.value = id }
-function time(value?: string) { return !value || value.startsWith('0001-') ? '--' : new Date(value).toLocaleTimeString() }
+const time = formatGoTime
 </script>
 
 <template>
   <div class="ops-page topology-page">
-    <div class="topology-tabs"><strong>{{ t('topo.live') }}</strong><button @click="router.push('/groups')">{{ t('topo.config') }}</button></div>
-    <div class="flow-toolbar"><span>{{ t('topo.relation') }}</span><span>{{ t('topo.refresh_interval') }}</span><button @click="refresh">{{ t('topo.refresh') }}</button><div><b class="good">{{ t('topo.health') }}</b><b class="warn">{{ t('topo.warn') }}</b><b class="bad">{{ t('topo.bad') }}</b></div></div>
+    <div class="ops-heading">
+      <div>
+        <h1 class="ops-title">{{ t('nav.topology') }}</h1>
+        <p class="ops-subtitle">{{ t('topo.relation') }}</p>
+      </div>
+      <div class="ops-actions">
+        <button class="ops-button" @click="refresh">{{ t('topo.refresh') }}</button>
+        <button class="ops-button primary" @click="router.push('/groups')">{{ t('topo.config') }}</button>
+      </div>
+    </div>
+    <div class="flow-toolbar"><span>{{ t('topo.refresh_interval') }}</span><div><b class="good">{{ t('topo.health') }}</b><b class="warn">{{ t('topo.warn') }}</b><b class="bad">{{ t('topo.bad') }}</b></div></div>
     <div v-if="error" class="ops-error">{{ error }}</div>
 
     <div class="topology-shell">

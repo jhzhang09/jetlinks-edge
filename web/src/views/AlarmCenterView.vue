@@ -5,6 +5,7 @@ import { useMessage } from 'naive-ui'
 import { useOperations } from '@/composables/useOperations'
 import { useI18n } from '@/i18n'
 import OpsTrendChart from '@/components/OpsTrendChart.vue'
+import { formatGoDateTime } from '@/utils/time'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -20,7 +21,7 @@ const suggestions = computed(() => selected.value?.sourceType === 'north'
   ? [t('alarms.suggest.north_net'), t('alarms.suggest.north_auth'), t('alarms.suggest.north_restart')] 
   : [t('alarms.suggest.south_net'), t('alarms.suggest.south_port'), t('alarms.suggest.south_reload')])
 watch(alarms, items => { if (!selectedId.value && items.length) selectedId.value = items[0].id }, { immediate: true })
-function time(value?: string) { return !value || value.startsWith('0001-') ? '--' : new Date(value).toLocaleString() }
+const time = formatGoDateTime
 async function retry() {
   if (!selected.value) return
   recovering.value = true
@@ -32,10 +33,19 @@ async function retry() {
 
 <template>
   <div class="ops-page alarm-page">
-    <div v-if="error" class="ops-error">{{ error }}</div>
+    <div class="ops-heading" style="padding: 16px 20px 0 20px;">
+      <div>
+        <h1 class="ops-title">{{ t('nav.alarms') }}</h1>
+        <p class="ops-subtitle">{{ t('alarms.details_diagnosis') }}</p>
+      </div>
+      <div class="ops-actions">
+        <button class="ops-button" @click="refresh">{{ t('devices.refresh') }}</button>
+      </div>
+    </div>
+    <div v-if="error" class="ops-error" style="margin: 10px 20px 0 20px;">{{ error }}</div>
     <div class="alarm-layout">
       <section class="queue-column">
-        <header><h1>{{ t('alarms.queue') }} <small>({{ data.alarms.length }})</small></h1><button @click="refresh">{{ t('devices.refresh') }}</button></header>
+        <header><strong>{{ t('alarms.queue') }} <small>({{ data.alarms.length }})</small></strong></header>
         <div class="severity-tabs"><button :class="{ active: severity === 'all' }" @click="severity = 'all'">{{ t('common.all') }} {{ data.alarms.length }}</button><button :class="{ active: severity === 'critical' }" @click="severity = 'critical'">{{ t('severity.critical') }} {{ data.alarms.filter(item => item.severity === 'critical').length }}</button><button :class="{ active: severity === 'warning' }" @click="severity = 'warning'">{{ t('severity.warning') }} {{ data.alarms.filter(item => item.severity === 'warning').length }}</button></div>
         <button v-for="alarm in alarms" :key="alarm.id" class="alarm-card" :class="{ selected: selected?.id === alarm.id, critical: alarm.severity === 'critical' }" @click="selectedId = alarm.id"><span><time>{{ time(alarm.time) }}</time><b>{{ t('severity.' + alarm.severity) }}</b></span><strong>{{ alarm.sourceName }} {{ alarm.message }}</strong><small>{{ t('source.' + alarm.sourceType) }} / {{ alarm.sourceId }}</small><em>{{ t('alarms.unresolved') }}</em></button>
         <div v-if="!alarms.length" class="ops-empty">{{ t('dash.no_active_alarms') }}</div>
@@ -66,8 +76,8 @@ async function retry() {
 </template>
 
 <style scoped>
-.alarm-page { margin: -18px -20px -28px; width: auto; }
-.alarm-layout { min-height: calc(100vh - 66px); display: grid; grid-template-columns: 360px minmax(560px, 1fr) 320px; }
+.alarm-page { margin: -18px -20px -28px; width: auto; display: flex; flex-direction: column; }
+.alarm-layout { flex: 1; min-height: calc(100vh - 128px); display: grid; grid-template-columns: 360px minmax(560px, 1fr) 320px; }
 .queue-column, .diagnosis-column, .recovery-column { min-width: 0; border-right: 1px solid var(--line); background: var(--surface); }
 .recovery-column { border: 0; }
 .queue-column > header, .diagnosis-column > h1, .recovery-column > h1 { height: 56px; display: flex; align-items: center; justify-content: space-between; margin: 0; padding: 0 16px; border-bottom: 1px solid var(--line); color: var(--text); font-size: 16px; }

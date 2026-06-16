@@ -1,10 +1,11 @@
 import { defineStore } from 'pinia'
+import { STORAGE_TOKEN_KEY } from '@/constants/keys'
 import { login, me, type LoginResp } from '@/api'
 
 // 简单的登录态：localStorage 中持久化 token。
 export const useAuthStore = defineStore('auth', {
   state: () => ({
-    token: localStorage.getItem('jetlinks-edge-token') || '',
+    token: localStorage.getItem(STORAGE_TOKEN_KEY) || '',
     user: null as null | { id: string; username: string; role: string }
   }),
   getters: {
@@ -15,7 +16,7 @@ export const useAuthStore = defineStore('auth', {
       const resp: LoginResp = await login({ username, password })
       this.token = resp.token
       this.user = resp.user
-      localStorage.setItem('jetlinks-edge-token', resp.token)
+      localStorage.setItem(STORAGE_TOKEN_KEY, resp.token)
       return resp
     },
     async loadProfile() {
@@ -29,7 +30,7 @@ export const useAuthStore = defineStore('auth', {
     logout() {
       this.token = ''
       this.user = null
-      localStorage.removeItem('jetlinks-edge-token')
+      localStorage.removeItem(STORAGE_TOKEN_KEY)
     }
   }
 })
