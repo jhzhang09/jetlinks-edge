@@ -201,8 +201,8 @@ type NorthApp struct {
 //   - NorthApp 是通道（broker 连接），不关心具体设备
 //   - 同一 NorthApp 上送的多个 Group 对应多台设备
 //   - productId/deviceId 用于构造 MQTT topic
-//   - secureId/secureKey 用于 JetLinks 规范的 SM3 认证
-//     （clientId=deviceId、username=secureId+'|'+timestamp、password=SM3(...)）
+//   - secureId/secureKey 为设备直连模式预留，用于 JetLinks 规范的 MD5 认证
+//     （clientId=deviceId、username=secureId+'|'+timestamp、password=MD5(...)）
 //
 // 注意：secureId 与 secureKey 是 JetLinks 平台对设备/产品的安全凭据，
 // 与"北向应用"中的 broker 网关账号不同。

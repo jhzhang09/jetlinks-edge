@@ -9,7 +9,7 @@
 // JetLinks 平台 MQTT 认证规范：
 //   - clientId = 平台设备实例 ID（网关的 deviceId）
 //   - username = secureId + "|" + timestamp
-//   - password = SM3(secureId + "|" + timestamp + "|" + secureKey)
+//   - password = MD5(secureId + "|" + timestamp + "|" + secureKey)
 //   - timestamp 为当前系统时间戳（毫秒），与平台时间差 < 5 分钟
 //
 // 主题格式（按官方协议 V1.3.1，**不是**内部 EventBus 的 /device/...）：
@@ -41,7 +41,6 @@ import (
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/google/uuid"
-	gmsm "github.com/piligo/gmsm/sm3"
 	"go.uber.org/zap"
 
 	"github.com/jhzhang09/jetlinks-edge/internal/core"
@@ -52,7 +51,7 @@ const DriverName = "jetlinks-mqtt"
 
 const mqttOperationTimeout = 10 * time.Second
 
-// AppConfig 北向应用配置（v0.4 - 符合 JetLinks 平台 MQTT 认证规范）。
+// AppConfig 北向应用配置（符合 JetLinks 平台 MQTT 认证规范）。
 //
 // 字段说明：
 //   - Broker:      broker 地址，例如 tcp://127.0.0.1:1883
@@ -62,7 +61,7 @@ const mqttOperationTimeout = 10 * time.Second
 //   - SecureKey:   网关的 secureKey（来自 JetLinks 平台）
 //   - Username/Password: 留空，**程序运行时按 JetLinks 规范动态计算**：
 //     username = SecureID + "|" + timestamp
-//     password = SM3(SecureID + "|" + timestamp + "|" + SecureKey)
+//     password = MD5(SecureID + "|" + timestamp + "|" + SecureKey)
 //   - TimestampDelta: timestamp 与平台时间的容差（秒），默认 300 (5 分钟)
 //
 // 重要：ProductID 是**网关**自己的产品 ID（在 JetLinks 平台的产品列表里），
@@ -73,8 +72,8 @@ type AppConfig struct {
 	DeviceID       string `json:"deviceId"`       // 网关在 JetLinks 平台的 deviceId（= clientId）
 	SecureID       string `json:"secureId"`       // 网关的 secureId
 	SecureKey      string `json:"secureKey"`      // 网关的 secureKey
-	Username       string `json:"username"`       // 可选：留空时自动按 SM3 规则计算
-	Password       string `json:"password"`       // 可选：留空时自动按 SM3 规则计算
+	Username       string `json:"username"`       // 可选：留空时自动按 MD5 规则计算
+	Password       string `json:"password"`       // 可选：留空时自动按 MD5 规则计算
 	CleanSession   bool   `json:"cleanSession"`   // 默认 true
 	KeepAlive      int    `json:"keepAlive"`      // 秒，默认 30
 	TimestampDelta int    `json:"timestampDelta"` // timestamp 容差（秒），默认 300
@@ -177,7 +176,7 @@ func (a *app) reconnectLoop(ctx context.Context) {
 			if client != nil && client.IsConnected() {
 				return
 			}
-			zap.L().Info("jetlinks mqtt reconnecting with fresh SM3 timestamp...")
+			zap.L().Info("jetlinks mqtt reconnecting with fresh MD5 timestamp...")
 			if a.connectWithTimeout(12 * time.Second) {
 				return
 			}
@@ -238,7 +237,7 @@ func parseAppConfig(m map[string]interface{}) (AppConfig, error) {
 	if cfg.QoS > 1 {
 		return cfg, fmt.Errorf("jetlinks: qos must be 0 or 1")
 	}
-	// Username/Password 都为空时启用 SM3 自动认证
+	// Username/Password 都为空时启用 MD5 自动认证
 	// 此时必须提供 productId + secureId + secureKey + deviceId
 	if cfg.Username == "" && cfg.Password == "" {
 		missing := []string{}
@@ -255,7 +254,7 @@ func parseAppConfig(m map[string]interface{}) (AppConfig, error) {
 			missing = append(missing, "deviceId")
 		}
 		if len(missing) > 0 {
-			return cfg, fmt.Errorf("jetlinks: missing required fields for auto SM3 auth: %v", missing)
+			return cfg, fmt.Errorf("jetlinks: missing required fields for auto MD5 auth: %v", missing)
 		}
 	}
 	return cfg, nil
@@ -268,20 +267,13 @@ func md5Hex(input string) string {
 	return fmt.Sprintf("%X", h.Sum(nil))
 }
 
-// sm3Hex 返回 input 的 SM3 摘要（64 字符大写十六进制）。
-func sm3Hex(input string) string {
-	h := gmsm.New()
-	h.Write([]byte(input))
-	return fmt.Sprintf("%X", h.Sum(nil))
-}
-
 // buildAuth 根据 cfg 生成当前时刻的 (clientId, username, password)。
 //
 // 规则（JetLinks MQTT 接入规范）：
 //   - clientId = DeviceID
 //   - timestamp = 当前毫秒时间戳
 //   - username = SecureID + "|" + timestamp
-//   - password = SM3(SecureID + "|" + timestamp + "|" + SecureKey)（大写十六进制）
+//   - password = MD5(SecureID + "|" + timestamp + "|" + SecureKey)（大写十六进制）
 //
 // 如果 Username/Password 已显式配置，则用配置值（兼容 token 模式）。
 func (a *app) buildAuth() (clientID, username, password string) {
@@ -877,7 +869,7 @@ func waitMQTTToken(ctx context.Context, token mqtt.Token) error {
 // 注意：本实现采用"网关+子设备"模型。1 个 NorthApp = 1 个网关 = 1 个 MQTT 连接。
 // 多个子设备（Group）共享同一条连接，上送用网关的子设备 topic（带 child/... 段）。
 
-// 直连设备 topic（直连模式暂未启用，保留供 v0.5+）
+// 直连设备 topic（直连模式暂未启用，保留供后续版本扩展）
 func topicPropertiesReport(productID, deviceID string) string {
 	return fmt.Sprintf("/%s/%s/properties/report", productID, deviceID)
 }

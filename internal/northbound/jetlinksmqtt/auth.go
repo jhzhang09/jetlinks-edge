@@ -1,11 +1,9 @@
 // Package jetlinksmqtt 的 JetLinks MQTT 私有协议认证辅助函数。
 //
-// JetLinks 平台 MQTT 密码规则（按你提供的接入规范）：
+// JetLinks 平台 MQTT 密码规则（按官方协议）：
 //
 //	username = secureId + "|" + timestamp        (timestamp 为毫秒)
-//	password = SM3(secureId + "|" + timestamp + "|" + secureKey)  (大写十六进制)
-//
-// SM3 使用 github.com/piligo/gmsm/sm3（与 gmssl Python 库输出完全一致）。
+//	password = MD5(secureId + "|" + timestamp + "|" + secureKey)  (大写十六进制)
 package jetlinksmqtt
 
 import (

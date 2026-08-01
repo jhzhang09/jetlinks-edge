@@ -7,15 +7,15 @@ JetLinks 平台内置 MQTT Broker（默认端口 11883，可改 1883）。**JetL
 - **网关** = 1 个 MQTT 连接 = 1 个 NorthApp 配置实体
 - **子设备** = 1 个点组 = 平台上的 1 个 deviceId
 - 多个子设备共享同一条 MQTT 连接，平台从消息 topic `/{gwProductId}/{gwDeviceId}/child/{childDeviceId}/...` 识别子设备身份
-- 子设备**不需要**自己的 broker 凭据（无 SM3 密码计算），平台根据网关级 token 完成认证
+- 子设备**不需要**自己的 broker 凭据（无 MD5 密码计算），平台根据网关级凭据完成认证
 
 这与 JetLinks 平台的 `ChildDeviceGateway` / `MqttClientDeviceGateway` 行为一致
 （参考 `MqttClientDeviceGateway.java:178` 的 `helper.handleDeviceMessage(message, ...)`，
 平台从消息 topic 动态发现子设备并创建 session）。
 
-> 平台也支持"每设备 1 个 MQTT 连接"的直连模式（clientId=deviceId、SM3 密码），
+> 平台也支持"每设备 1 个 MQTT 连接"的直连模式（clientId=deviceId、MD5 密码），
 > JetLinks Edge **不采用这种模式**（1000 设备要 1000 个连接，规模不可行）。
-> 后续阶段可提供 `mode=direct` 选项，pkg/sm3 已预留。
+> 后续阶段可提供 `mode=direct` 选项。
 
 ## 实体关系
 
@@ -55,18 +55,18 @@ JetLinks 平台 MQTT 认证规则（来自平台官方接入文档）：
 
 - **`clientId`** = 平台设备实例 ID（这里 = 网关的 deviceId）
 - **`username`** = `secureId + "|" + timestamp`（timestamp 为毫秒时间戳）
-- **`password`** = `SM3(secureId + "|" + timestamp + "|" + secureKey)`（大写十六进制）
+- **`password`** = `MD5(secureId + "|" + timestamp + "|" + secureKey)`（大写十六进制）
 - **timestamp 与平台时间差 < 5 分钟**（否则认证失败）
 
 在 JetLinks Edge 中：
 - 网关（NorthApp）配置 `deviceId` / `secureId` / `secureKey` 三个字段
 - 程序在每次连接时**自动按上述规则计算** username/password
-- SM3 实现使用 `github.com/piligo/gmsm/sm3`（与 gmssl Python 库输出**完全一致**）
+- MD5 摘要输出为 32 位大写十六进制字符串
 - 共享 MQTT 连接长跑时，程序每 `timestampDelta/2` 秒**主动重建连接**，让 timestamp 持续刷新
 
-如果**不想用 SM3 自动认证**（比如已经有网关级 token），可显式填 `username`/`password` 字段，程序会跳过 SM3 计算直接用配置值。
+如果**不想用 MD5 自动认证**（比如已经有网关级 token），可显式填 `username`/`password` 字段，程序会跳过 MD5 计算直接使用配置值。
 
-> **直连模式说明**：JetLinks 还支持"每设备 1 个 MQTT 连接 + SM3 密码"模式：
+> **直连模式说明**：JetLinks 还支持"每设备 1 个 MQTT 连接 + MD5 密码"模式：
 > 当前实现**不采用**（1000 设备要 1000 个连接），但 SecureKey 字段已预留为子设备级别。
 > 网关模式更适合工业 IoT 大规模场景。
 

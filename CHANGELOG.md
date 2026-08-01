@@ -5,6 +5,31 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-01 · Pluggable Runtime Edition
+
+### 新增
+- 增加按能力组合的南向与北向最小插件接口，现有 `SouthDriver`、`NorthHandler` 和工厂签名继续兼容
+- 点组与北向应用支持多对多关系持久化，旧 `northAppId` 字段保留为 API 兼容层并自动迁移
+- 增加北向命令归属校验、可选功能调用、MQTT QoS 0/1、有界工作协程、操作超时和投递统计
+- 增加敏感配置脱敏、密码占位符保留更新和生产环境默认凭据保护
+- Web 控制台增加独立修改密码组件，并补充主要管理页面预览图
+
+### 改进
+- 串行化 Runner 停止与热更新，替换实例不可用时保留健康旧实例
+- 修复点位配置共享 Map 的并发修改风险，拆分高频最近值缓存锁，降低与运行时拓扑锁的竞争
+- 完善 EventBus 退订、MQTT 客户端关闭、重连循环和北向调用生命周期管理
+- JSON 配置序列化与反序列化错误改为显式传播，避免静默丢失配置
+- 统一控制台页面标题与时间格式，修复浅色主题对比度和事件监听释放问题
+
+### 修复
+- JetLinks MQTT 认证实现、测试、界面和文档统一为官方协议规定的 `MD5(secureId|timestamp|secureKey)`，移除未使用的 SM3 依赖
+- 修复北向热替换、下行命令越权、消息队列无界增长和关闭阶段资源泄漏风险
+
+### 依赖与工具链
+- 升级 `axios` 1.17.0 → 1.18.0、`postcss` 8.5.15 → 8.5.25、`brace-expansion` 2.1.1 → 2.1.4、`form-data` 4.0.5 → 4.0.6
+- 升级间接依赖 `quic-go` 0.59.0 → 0.59.1
+- 发布门禁继续执行前端构建、golangci-lint 与 `go test -race ./...`
+
 ## [0.4.1] - 2026-06-14 · Embedded Web Edition
 
 ### 新增
@@ -75,7 +100,7 @@
 
 ### 新增
 - 实现 JetLinks 官方网关与子设备映射模型，多个子设备（点组）共享同一条物理 MQTT 网关长连接上报
-- 引入基于 SM3 算法的动态计算鉴权与连接机制
+- 引入基于 MD5 公式的动态计算鉴权与连接机制
 - 新增 timestamp 周期自动刷新与长连接重连防超时过期
 - 独立的北向应用管理及南向子设备点组的注册、上线与数据上送控制
 
@@ -97,7 +122,8 @@
 - 北向 MQTT 客户端上送
 - Vue 3 + Vite + Naive UI Web 管理控制台
 
-[Unreleased]: https://github.com/jhzhang09/jetlinks-edge/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/jhzhang09/jetlinks-edge/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/jhzhang09/jetlinks-edge/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/jhzhang09/jetlinks-edge/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/jhzhang09/jetlinks-edge/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jhzhang09/jetlinks-edge/compare/v0.2.0...v0.3.0
