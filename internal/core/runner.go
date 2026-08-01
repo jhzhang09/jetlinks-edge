@@ -66,6 +66,8 @@ type Runner struct {
 	store   Store
 
 	mu sync.RWMutex
+	// lastValsMu 独立保护高频采集缓存，避免点位值更新与低频运行时拓扑变更争用同一把锁。
+	lastValsMu sync.RWMutex
 	// lifecycleMu 串行化 Stop 与各类热更新，避免同一运行时被并发替换或重复启动。
 	lifecycleMu sync.Mutex
 	// northCallMu 保证北向实例热替换时，旧实例不会在 OnMessage 执行中被关闭。
@@ -661,8 +663,10 @@ func (r *Runner) Reload(ctx context.Context, groupID string) error {
 	if hadOld {
 		r.mu.Lock()
 		delete(r.groups, groupID)
-		delete(r.lastVals, groupID)
 		r.mu.Unlock()
+		r.lastValsMu.Lock()
+		delete(r.lastVals, groupID)
+		r.lastValsMu.Unlock()
 	}
 	return r.startGroup(r.bgCtx, g)
 }
@@ -1429,8 +1433,8 @@ func (r *Runner) GroupInfoList() []GroupInfo {
 
 // LastValues 返回某个点组的最近一次采集值。
 func (r *Runner) LastValues(groupID string) map[string]TagValue {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.lastValsMu.RLock()
+	defer r.lastValsMu.RUnlock()
 	m, ok := r.lastVals[groupID]
 	if !ok {
 		return map[string]TagValue{}
@@ -1447,8 +1451,8 @@ func (r *Runner) cacheValue(groupID string, v TagValue) {
 }
 
 func (r *Runner) updateCachedValue(groupID string, v TagValue) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.lastValsMu.Lock()
+	defer r.lastValsMu.Unlock()
 	if r.lastVals[groupID] == nil {
 		r.lastVals[groupID] = map[string]TagValue{}
 	}
