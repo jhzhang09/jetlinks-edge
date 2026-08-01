@@ -29,6 +29,31 @@ func TestUpdateCachedValueDetectsChangesBeforeOverwrite(t *testing.T) {
 	}
 }
 
+func TestLastValueCacheDoesNotWaitForRuntimeTopologyLock(t *testing.T) {
+	runner := NewRunner(NewDriverRegistry(), NewNorthRegistry(), nil)
+
+	// 模拟热更新持有运行时拓扑锁；高频采集缓存应继续独立更新。
+	runner.mu.Lock()
+	done := make(chan struct{})
+	go func() {
+		runner.updateCachedValue("group-1", TagValue{TagID: "tag-1", Value: 1})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		runner.mu.Unlock()
+	case <-time.After(time.Second):
+		runner.mu.Unlock()
+		<-done
+		t.Fatal("last value cache update waited for runtime topology lock")
+	}
+
+	if got := runner.LastValues("group-1")["tag-1"].Value; got != 1 {
+		t.Fatalf("cached value = %v, want 1", got)
+	}
+}
+
 type lifecycleNorth struct {
 	registered   int
 	deregistered int
