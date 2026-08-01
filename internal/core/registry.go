@@ -11,20 +11,23 @@ import (
 //   - cfg:  包含 GroupID 与 Config 字段
 type DriverFactory func(ctx context.Context, name string, cfg DriverConfig) (SouthDriver, error)
 
+// DriverLifecycleFactory 创建只要求最小生命周期的南向驱动实例。
+type DriverLifecycleFactory func(ctx context.Context, name string, cfg DriverConfig) (DriverLifecycle, error)
+
 // DriverRegistry 南向驱动工厂注册表。
 //
 // 通过 Register(name, factory) 注册工厂；通过 Create() 创建实例。
 // 这是一个全局单例（进程内），由 main.go 在启动时注册所有内置驱动。
 type DriverRegistry struct {
 	mu          sync.RWMutex
-	factories   map[string]DriverFactory
+	factories   map[string]DriverLifecycleFactory
 	descriptors map[string]ExtensionDescriptor
 }
 
 // NewDriverRegistry 创建空注册表。
 func NewDriverRegistry() *DriverRegistry {
 	return &DriverRegistry{
-		factories:   map[string]DriverFactory{},
+		factories:   map[string]DriverLifecycleFactory{},
 		descriptors: map[string]ExtensionDescriptor{},
 	}
 }
@@ -37,6 +40,14 @@ func (r *DriverRegistry) Register(name string, factory DriverFactory) {
 
 // RegisterExtension 注册带元数据描述的南向驱动工厂。
 func (r *DriverRegistry) RegisterExtension(descriptor ExtensionDescriptor, factory DriverFactory) {
+	r.RegisterLifecycleExtension(descriptor, func(ctx context.Context, name string, cfg DriverConfig) (DriverLifecycle, error) {
+		return factory(ctx, name, cfg)
+	})
+}
+
+// RegisterLifecycleExtension 注册只要求最小生命周期的南向插件。
+// 轮询读取、点位写入、节点浏览和功能调用由 Runner 在运行时按可选接口探测。
+func (r *DriverRegistry) RegisterLifecycleExtension(descriptor ExtensionDescriptor, factory DriverLifecycleFactory) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.factories[descriptor.Type] = factory
@@ -84,6 +95,19 @@ func (r *DriverRegistry) Has(name string) bool {
 
 // Create 通过工厂创建一个驱动实例。
 func (r *DriverRegistry) Create(ctx context.Context, name string, cfg DriverConfig) (SouthDriver, error) {
+	driver, err := r.CreateLifecycle(ctx, name, cfg)
+	if err != nil {
+		return nil, err
+	}
+	legacyDriver, ok := driver.(SouthDriver)
+	if !ok {
+		return nil, fmt.Errorf("driver %s does not implement legacy polling capabilities", name)
+	}
+	return legacyDriver, nil
+}
+
+// CreateLifecycle 创建南向驱动实例，不强制要求轮询读取和点位写入能力。
+func (r *DriverRegistry) CreateLifecycle(ctx context.Context, name string, cfg DriverConfig) (DriverLifecycle, error) {
 	r.mu.RLock()
 	factory, ok := r.factories[name]
 	r.mu.RUnlock()

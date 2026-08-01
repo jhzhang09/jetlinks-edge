@@ -186,6 +186,36 @@ func TestStore(t *testing.T) {
 		t.Errorf("GetGroup returned unexpected result: %+v", gGet)
 	}
 
+	// 多北向绑定使用关系表持久化，旧字段只作 API 兼容层。
+	g.NorthAppID = "north-1,north-2"
+	if err := s.SaveGroup(ctx, g); err != nil {
+		t.Fatalf("SaveGroup with multiple north apps failed: %v", err)
+	}
+	var bindingCount int64
+	if err := s.DB().Model(&core.GroupNorthAppBinding{}).
+		Where("group_id = ?", g.ID).
+		Count(&bindingCount).Error; err != nil {
+		t.Fatalf("count group north bindings failed: %v", err)
+	}
+	if bindingCount != 2 {
+		t.Fatalf("binding count = %d, want 2", bindingCount)
+	}
+	if err := s.DB().Model(&core.Group{}).Where("id = ?", g.ID).Update("north_app_id", "").Error; err != nil {
+		t.Fatalf("clear legacy north_app_id failed: %v", err)
+	}
+	gFromBindings, err := s.GetGroup(ctx, g.ID)
+	if err != nil {
+		t.Fatalf("GetGroup from relation bindings failed: %v", err)
+	}
+	if gFromBindings.NorthAppID != "north-1,north-2" {
+		t.Fatalf("unexpected relation-backed north apps: %q", gFromBindings.NorthAppID)
+	}
+	// 恢复后续删除单个 NorthApp 的旧有测试场景。
+	g.NorthAppID = "north-1"
+	if err := s.SaveGroup(ctx, g); err != nil {
+		t.Fatalf("restore single north app binding failed: %v", err)
+	}
+
 	// 测试列表
 	groups, err := s.ListEnabledGroups(ctx)
 	if err != nil {

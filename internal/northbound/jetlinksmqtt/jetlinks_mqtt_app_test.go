@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/jhzhang09/jetlinks-edge/internal/core"
 )
@@ -46,6 +47,15 @@ func TestDecodeCommandSupportsOfficialReadAndWritePayloads(t *testing.T) {
 	}
 }
 
+func TestBuildReplyBodyDoesNotNestFunctionOutput(t *testing.T) {
+	body := buildReplyBody(core.NorthCommand{Type: "invoke-function"}, core.NorthCommandReply{
+		ID: "invoke-1", Code: 0, Payload: map[string]interface{}{"output": "done"},
+	})
+	if body["output"] != "done" {
+		t.Fatalf("function output = %#v, want done", body["output"])
+	}
+}
+
 func TestParseAppConfigKeepsNumericAndBooleanOptions(t *testing.T) {
 	cfg, err := parseAppConfig(map[string]interface{}{
 		"broker":         "tcp://127.0.0.1:1883",
@@ -56,12 +66,29 @@ func TestParseAppConfigKeepsNumericAndBooleanOptions(t *testing.T) {
 		"cleanSession":   false,
 		"keepAlive":      float64(60),
 		"timestampDelta": float64(240),
+		"qos":            float64(1),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.CleanSession || cfg.KeepAlive != 60 || cfg.TimestampDelta != 240 {
+	if cfg.CleanSession || cfg.KeepAlive != 60 || cfg.TimestampDelta != 240 || cfg.QoS != 1 {
 		t.Fatalf("unexpected parsed config: %+v", cfg)
+	}
+	if _, err := parseAppConfig(map[string]interface{}{
+		"broker": "tcp://127.0.0.1:1883", "productId": "p", "deviceId": "d",
+		"username": "u", "password": "p", "qos": 2,
+	}); err == nil {
+		t.Fatal("expected invalid qos to be rejected")
+	}
+}
+
+func TestOnMessageReportsOfflineDrop(t *testing.T) {
+	a := &app{cfg: AppConfig{ProductID: "gateway-product", DeviceID: "gateway-device"}}
+	err := a.OnMessage(context.Background(), core.NorthMessage{
+		DeviceID: "child-1", Timestamp: time.Now(), Payload: map[string]interface{}{},
+	})
+	if err == nil || a.stats()["dropped"] != 1 {
+		t.Fatalf("expected observable offline drop, err=%v stats=%v", err, a.stats())
 	}
 }
 

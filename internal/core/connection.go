@@ -6,6 +6,7 @@ package core
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -25,20 +26,28 @@ type Connection struct {
 }
 
 // MarshalConfig 把 Config 序列化为 JSON 字符串。
-func (c *Connection) MarshalConfig() {
+func (c *Connection) MarshalConfig() error {
 	if c.Config == nil {
 		c.ConfigJSON = "{}"
-		return
+		return nil
 	}
-	b, _ := json.Marshal(c.Config)
+	b, err := json.Marshal(c.Config)
+	if err != nil {
+		return fmt.Errorf("marshal connection config: %w", err)
+	}
 	c.ConfigJSON = string(b)
+	return nil
 }
 
 // UnmarshalConfig 从 ConfigJSON 反序列化为 Config。
-func (c *Connection) UnmarshalConfig() {
+func (c *Connection) UnmarshalConfig() error {
 	if c.ConfigJSON == "" {
 		c.Config = map[string]interface{}{}
-		return
+		return nil
 	}
-	_ = json.Unmarshal([]byte(c.ConfigJSON), &c.Config)
+	if err := json.Unmarshal([]byte(c.ConfigJSON), &c.Config); err != nil {
+		c.Config = map[string]interface{}{}
+		return fmt.Errorf("unmarshal connection config: %w", err)
+	}
+	return nil
 }

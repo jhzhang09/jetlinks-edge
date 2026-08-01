@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -22,6 +23,8 @@ import (
 // DriverName 通用 MQTT 北向应用驱动名。
 const DriverName = "generic-mqtt"
 
+const mqttOperationTimeout = 10 * time.Second
+
 // AppConfig 通用 MQTT 北向配置。
 type AppConfig struct {
 	Broker       string `json:"broker"`       // 示例: tcp://127.0.0.1:1883
@@ -32,6 +35,7 @@ type AppConfig struct {
 	KeepAlive    int    `json:"keepAlive"`    // keepalive 时间（秒），默认 30
 	UploadTopic  string `json:"uploadTopic"`  // 属性上送主题，支持 {appId}, {groupId}, {deviceId} 占位符
 	WriteTopic   string `json:"writeTopic"`   // 写指令订阅主题（可选）
+	QoS          byte   `json:"qos"`          // MQTT 交付等级，0=最多一次，1=至少一次
 }
 
 type app struct {
@@ -42,11 +46,21 @@ type app struct {
 	commandExecutor core.NorthCommandExecutor
 	statusProvider  core.GroupStatusProvider
 	ctx             context.Context
+	cancel          context.CancelFunc
 	startTime       time.Time
 
-	reconnecting bool
-	reconnectMu  sync.Mutex
-	mu           sync.RWMutex
+	reconnecting   bool
+	reconnectMu    sync.Mutex
+	mu             sync.RWMutex
+	commandSem     chan struct{}
+	commandMu      sync.Mutex
+	commandWG      sync.WaitGroup
+	lifecycleWG    sync.WaitGroup
+	closing        bool
+	published      atomic.Int64
+	publishFailed  atomic.Int64
+	dropped        atomic.Int64
+	commandDropped atomic.Int64
 }
 
 // NewApp 通用 MQTT 北向应用工厂方法。
@@ -65,14 +79,17 @@ func NewApp(ctx context.Context, appID string, cfg core.NorthAppConfig) (core.No
 		ac.UploadTopic = "/edge/" + appID + "/upload"
 	}
 
+	appCtx, cancel := context.WithCancel(ctx)
 	a := &app{
 		appID:           appID,
 		cfg:             ac,
 		groups:          map[string]*core.Group{},
 		commandExecutor: cfg.CommandExecutor,
 		statusProvider:  cfg.GroupStatusProvider,
-		ctx:             ctx,
+		ctx:             appCtx,
+		cancel:          cancel,
 		startTime:       time.Now(),
+		commandSem:      make(chan struct{}, 4),
 	}
 
 	if !a.connectWithTimeout(3 * time.Second) {
@@ -104,6 +121,7 @@ func Descriptor() core.ExtensionDescriptor {
 			{Key: "keepAlive", Label: "Keep Alive（秒）", Type: core.ConfigFieldNumber, DefaultValue: 30, Min: mqttNumberPointer(5), Max: mqttNumberPointer(3600)},
 			{Key: "uploadTopic", Label: "上送主题", Type: core.ConfigFieldText, Required: true, DefaultValue: "/edge/{appId}/upload", Placeholder: "/edge/{appId}/upload"},
 			{Key: "writeTopic", Label: "指令下发订阅主题", Type: core.ConfigFieldText, Required: false, Placeholder: "可选，如 /edge/{appId}/write"},
+			{Key: "qos", Label: "QoS", Type: core.ConfigFieldSelect, DefaultValue: 0, Options: []core.ConfigOption{{Label: "0 - 最多一次", Value: 0}, {Label: "1 - 至少一次", Value: 1}}},
 		},
 	}
 }
@@ -126,6 +144,9 @@ func parseAppConfig(m map[string]interface{}) (AppConfig, error) {
 	}
 	if cfg.Broker == "" {
 		return cfg, fmt.Errorf("generic-mqtt: broker is required")
+	}
+	if cfg.QoS > 1 {
+		return cfg, fmt.Errorf("generic-mqtt: qos must be 0 or 1")
 	}
 	return cfg, nil
 }
@@ -168,6 +189,11 @@ func (a *app) connectWithTimeout(timeout time.Duration) bool {
 }
 
 func (a *app) startReconnectLoop() {
+	select {
+	case <-a.ctx.Done():
+		return
+	default:
+	}
 	a.reconnectMu.Lock()
 	if a.reconnecting {
 		a.reconnectMu.Unlock()
@@ -176,7 +202,18 @@ func (a *app) startReconnectLoop() {
 	a.reconnecting = true
 	a.reconnectMu.Unlock()
 
+	a.commandMu.Lock()
+	if a.closing {
+		a.commandMu.Unlock()
+		a.reconnectMu.Lock()
+		a.reconnecting = false
+		a.reconnectMu.Unlock()
+		return
+	}
+	a.lifecycleWG.Add(1)
+	a.commandMu.Unlock()
 	go func() {
+		defer a.lifecycleWG.Done()
 		defer func() {
 			a.reconnectMu.Lock()
 			a.reconnecting = false
@@ -213,8 +250,8 @@ func (a *app) onConnect(c mqtt.Client) {
 	}
 	topic := strings.ReplaceAll(a.cfg.WriteTopic, "{appId}", a.appID)
 	// 订阅命令下发主题
-	if token := c.Subscribe(topic, 0, a.onMessageReceived); token.Wait() && token.Error() != nil {
-		zap.L().Error("generic-mqtt: failed to subscribe to write topic", zap.String("topic", topic), zap.Error(token.Error()))
+	if err := waitMQTTToken(a.ctx, c.Subscribe(topic, a.cfg.QoS, a.onMessageReceived)); err != nil {
+		zap.L().Error("generic-mqtt: failed to subscribe to write topic", zap.String("topic", topic), zap.Error(err))
 	} else {
 		zap.L().Info("generic-mqtt: subscribed to write topic", zap.String("topic", topic))
 	}
@@ -250,18 +287,42 @@ func (a *app) onMessageReceived(c mqtt.Client, m mqtt.Message) {
 		return
 	}
 
-	// 执行指令
-	go func() {
-		reply, err := a.OnCommand(a.ctx, cmd)
-		if err != nil {
-			zap.L().Error("generic-mqtt: execute command failed", zap.Error(err))
+	// 以有界并发执行指令，避免异常流量无限创建 goroutine。
+	select {
+	case a.commandSem <- struct{}{}:
+		a.commandMu.Lock()
+		if a.closing {
+			a.commandMu.Unlock()
+			<-a.commandSem
 			return
 		}
-		// 回复发布到 writeTopic + "/reply"
+		a.commandWG.Add(1)
+		a.commandMu.Unlock()
 		replyTopic := m.Topic() + "/reply"
-		replyPayload, _ := json.Marshal(reply)
-		c.Publish(replyTopic, 0, false, replyPayload)
-	}()
+		go func() {
+			defer a.commandWG.Done()
+			defer func() { <-a.commandSem }()
+			reply, err := a.OnCommand(a.ctx, cmd)
+			if err != nil {
+				zap.L().Error("generic-mqtt: execute command failed", zap.Error(err))
+				return
+			}
+			// 回复发布到 writeTopic + "/reply"
+			replyPayload, err := json.Marshal(reply)
+			if err != nil {
+				a.publishFailed.Add(1)
+				zap.L().Error("generic-mqtt: encode command reply failed", zap.Error(err))
+				return
+			}
+			if err := waitMQTTToken(a.ctx, c.Publish(replyTopic, a.cfg.QoS, false, replyPayload)); err != nil {
+				a.publishFailed.Add(1)
+				zap.L().Error("generic-mqtt: publish command reply failed", zap.Error(err))
+			}
+		}()
+	default:
+		a.commandDropped.Add(1)
+		zap.L().Warn("generic-mqtt: command concurrency limit reached, dropping command")
+	}
 }
 
 // OnMessage 将采集到的数据发送至通用的 MQTT uploadTopic。
@@ -271,7 +332,8 @@ func (a *app) OnMessage(ctx context.Context, msg core.NorthMessage) error {
 	a.mu.RUnlock()
 
 	if c == nil || !c.IsConnected() {
-		return nil
+		a.dropped.Add(1)
+		return errors.New("generic-mqtt: broker is not connected; report dropped")
 	}
 
 	// 动态替换占位符
@@ -281,16 +343,22 @@ func (a *app) OnMessage(ctx context.Context, msg core.NorthMessage) error {
 	topic = strings.ReplaceAll(topic, "{deviceId}", msg.DeviceID)
 
 	// 统一输出 Payload 结构
-	payload, _ := json.Marshal(map[string]interface{}{
+	payload, err := json.Marshal(map[string]interface{}{
 		"appId":     a.appID,
 		"groupId":   msg.GroupID,
 		"timestamp": msg.Timestamp.UnixMilli(),
 		"values":    msg.Payload["properties"],
 	})
-
-	if token := c.Publish(topic, 0, false, payload); token.Wait() && token.Error() != nil {
-		return fmt.Errorf("generic-mqtt publish failed: %w", token.Error())
+	if err != nil {
+		a.publishFailed.Add(1)
+		return fmt.Errorf("generic-mqtt encode report: %w", err)
 	}
+
+	if err := waitMQTTToken(ctx, c.Publish(topic, a.cfg.QoS, false, payload)); err != nil {
+		a.publishFailed.Add(1)
+		return fmt.Errorf("generic-mqtt publish failed: %w", err)
+	}
+	a.published.Add(1)
 	return nil
 }
 
@@ -321,6 +389,14 @@ func (a *app) DeregisterGroup(g *core.Group) {
 
 // Close 优雅断开 MQTT 客户端。
 func (a *app) Close() error {
+	a.commandMu.Lock()
+	a.closing = true
+	if a.cancel != nil {
+		a.cancel()
+	}
+	a.commandMu.Unlock()
+	a.commandWG.Wait()
+	a.lifecycleWG.Wait()
 	a.mu.Lock()
 	client := a.client
 	a.client = nil
@@ -337,7 +413,33 @@ func (a *app) State() *core.NorthState {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	if a.client == nil {
-		return &core.NorthState{Connected: false, LastError: "client not initialized"}
+		return &core.NorthState{Connected: false, LastError: "client not initialized", Stats: a.stats()}
 	}
-	return &core.NorthState{Connected: a.client.IsConnected()}
+	state := &core.NorthState{Connected: a.client.IsConnected(), Stats: a.stats()}
+	if !state.Connected {
+		state.LastError = "broker is not connected"
+	}
+	return state
+}
+
+func (a *app) stats() map[string]int64 {
+	return map[string]int64{
+		"published":      a.published.Load(),
+		"publishFailed":  a.publishFailed.Load(),
+		"dropped":        a.dropped.Load(),
+		"commandDropped": a.commandDropped.Load(),
+	}
+}
+
+func waitMQTTToken(ctx context.Context, token mqtt.Token) error {
+	timer := time.NewTimer(mqttOperationTimeout)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return errors.New("mqtt operation timeout")
+	case <-token.Done():
+		return token.Error()
+	}
 }

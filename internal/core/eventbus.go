@@ -6,6 +6,7 @@ package core
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,6 +22,7 @@ type Event struct {
 type EventBus struct {
 	mu          sync.RWMutex
 	subscribers map[string]map[chan Event]struct{}
+	dropped     atomic.Uint64
 }
 
 // NewEventBus 创建一个新的事件总线实例。
@@ -42,10 +44,16 @@ func (eb *EventBus) Publish(topic string, ev Event) {
 				case ch <- ev:
 				default:
 					// 缓冲区满时丢弃，防止单个订阅者缓慢拖垮总线
+					eb.dropped.Add(1)
 				}
 			}
 		}
 	}
+}
+
+// Dropped 返回进程启动以来因订阅者缓冲区满而丢弃的事件数。
+func (eb *EventBus) Dropped() uint64 {
+	return eb.dropped.Load()
 }
 
 // Subscribe 订阅指定的主题。返回一个 Channel 和取消订阅的闭包函数。

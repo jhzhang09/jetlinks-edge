@@ -1,7 +1,7 @@
 # JetLinks Edge
 
-JetLinks 平台的 Go 语言边缘网关。**当前已实现**：Modbus TCP 采集 → JetLinks MQTT 上送。
-**预留扩展**：南向驱动（OPC-UA、Siemens S7、Modbus RTU、BACnet、MQTT-Client…）和北向传输（HTTP webhook、Sparkplug B、InfluxDB…）均可通过接口扩展。
+JetLinks 平台的 Go 语言边缘网关。**当前已实现**：Modbus TCP / OPC UA 采集 → JetLinks MQTT / Generic MQTT 上送。
+**预留扩展**：南向驱动（Siemens S7、Modbus RTU、BACnet、MQTT-Client…）和北向传输（HTTP webhook、Sparkplug B、InfluxDB…）均可通过接口扩展。
 
 > **v0.4 · Industrial Terminal Edition**：中英双语界面 · JetLinks 网关+子设备模型按官方协议 V1.3.1 · SM3 认证 · 全平台二进制打包 (linux/mac/win) · 单项自包含部署
 
@@ -44,7 +44,7 @@ JetLinks 平台的 Go 语言边缘网关。**当前已实现**：Modbus TCP 采�
 - **北向上送**：JetLinks MQTT 网关客户端
   - **JetLinks 网关 + 子设备 模型**：整个边缘网关作为 1 个网关设备连接平台，多个子设备（点组）共享同一条 MQTT 连接
   - 主题严格遵循 JetLinks 官方协议 V1.3.1：`/{gwProductId}/{gwDeviceId}/child/{childDeviceId}/properties/report`
-  - 支持属性上报、读属性、写属性、功能调用、指令回复、子设备注册
+  - 支持属性上报、读属性、写属性、指令回复、子设备注册；功能调用需南向驱动实现 `FunctionInvoker`
   - 断线自动重连
   - **多设备共享一条连接**：一个网关 = 一个 MQTT 连接，N 个子设备按需订阅/退订
   - **对应 JetLinks 平台 `ChildDeviceGateway` / `MqttClientDeviceGateway` 模型**
@@ -640,7 +640,7 @@ go test ./pkg/modbuslib/...
 
 ## 已知限制（v0.4）
 
-- **南向南向采集限制**：目前只支持 Modbus TCP 采集，RTU 串口版本未实现（已预留 `SouthDriver` 接口以供后续开发）。
+- **南向采集限制**：当前内置 Modbus TCP 与 OPC UA，RTU 串口版本未实现；可通过南向插件接口继续扩展。
 - **用户权限控制**：目前统一使用默认的 `admin` 管理员账号，暂不支持多用户及细粒度的角色权限划分。
 - **系统 OTA 升级**：暂不支持固件或软件版本的在线 OTA 升级。
 

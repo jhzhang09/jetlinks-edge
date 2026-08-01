@@ -67,7 +67,10 @@ func (h *StatusHandler) Operations(c *gin.Context) {
 		return
 	}
 	for i := range groups {
-		groups[i].UnmarshalConfig()
+		if err := groups[i].UnmarshalConfig(); err != nil {
+			errResp(c, http.StatusInternalServerError, err)
+			return
+		}
 		h.store.PopulateGroupDriver(&groups[i])
 	}
 	northApps, err := h.runner.ListNorthAppStatus(ctx)
@@ -178,7 +181,7 @@ func (h *StatusHandler) Operations(c *gin.Context) {
 	c.JSON(http.StatusOK, operationView{
 		GeneratedAt:   time.Now(),
 		StartTime:     h.runner.StartTime(),
-		Runtime:       currentOperationRuntime(h.runner.StartTime()),
+		Runtime:       currentOperationRuntime(h.runner.StartTime(), h.runner.EventBusDropped()),
 		Connections:   operationConns,
 		Groups:        operationGroups,
 		NorthApps:     northApps,
@@ -220,6 +223,7 @@ type operationRuntime struct {
 	MemorySysBytes    uint64  `json:"memorySysBytes"`
 	MemoryUsedPercent float64 `json:"memoryUsedPercent"`
 	UptimeSeconds     int64   `json:"uptimeSeconds"`
+	EventBusDropped   uint64  `json:"eventBusDropped"`
 }
 
 type operationGroup struct {
@@ -262,7 +266,7 @@ type operationValue struct {
 	Error     string       `json:"error,omitempty"`
 }
 
-func currentOperationRuntime(startTime time.Time) operationRuntime {
+func currentOperationRuntime(startTime time.Time, eventBusDropped uint64) operationRuntime {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 	nodeID, err := os.Hostname()
@@ -280,5 +284,6 @@ func currentOperationRuntime(startTime time.Time) operationRuntime {
 		MemorySysBytes:    mem.Sys,
 		MemoryUsedPercent: usedPercent,
 		UptimeSeconds:     int64(time.Since(startTime).Seconds()),
+		EventBusDropped:   eventBusDropped,
 	}
 }

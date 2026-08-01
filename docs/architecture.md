@@ -27,10 +27,12 @@ flowchart TD
     DriverRegistry --> Modbus["南向插件<br/>modbus-tcp"]
     DriverRegistry --> OpcUa["南向插件<br/>opc-ua"]
     NorthRegistry --> JetLinks["北向插件<br/>jetlinks-mqtt"]
+    NorthRegistry --> GenericMqtt["北向插件<br/>generic-mqtt"]
     Runner --> Values["LastValues / DriverStatus"]
     Modbus --> Values
     OpcUa --> Values
     Runner --> JetLinks
+    Runner --> GenericMqtt
 ```
 
 ## 已确认插件状态
@@ -44,6 +46,7 @@ opcua.Register(driverRegistry)
 
 northRegistry := core.NewNorthRegistry()
 jetlinks.Register(northRegistry)
+mqtt.Register(northRegistry)
 ```
 
 | 方向 | 插件类型 | 状态 | 说明 |
@@ -51,6 +54,7 @@ jetlinks.Register(northRegistry)
 | 南向 | `modbus-tcp` | 已实现 | Modbus TCP 点位采集与写入 |
 | 南向 | `opc-ua` | 已实现 | OPC UA 连接、点位读写与节点浏览 |
 | 北向 | `jetlinks-mqtt` | 已实现 | JetLinks MQTT 网关 + 子设备接入 |
+| 北向 | `generic-mqtt` | 已实现 | 通用 MQTT 上送与下行写指令 |
 
 因此，后续文档和页面不要再把 OPC UA 标成“预留”。
 
@@ -69,10 +73,11 @@ jetlinks.Register(northRegistry)
 
 ## 设计原则摘要
 
-1. 南向设备插件实现 `core.SouthDriver`，可选实现 `core.NodeBrowser`。
-2. 北向应用插件实现 `core.NorthHandler`，通过 `NorthAppConfig.CommandExecutor` 回调 Runner 执行下行命令。
-3. 插件代码随主程序编译发布，当前不是运行时上传二进制插件。
-4. 插件配置必须通过 `ExtensionDescriptor` 暴露 Schema，前端通过 `DynamicConfigForm.vue` 动态渲染。
-5. 新增插件时优先补充描述符、配置校验、定向测试和运维状态来源，不为单个插件硬编码专用页面。
+1. 旧版南向插件继续实现 `core.SouthDriver`；新插件可从 `core.DriverLifecycle` 起步，按需实现 `TagReader`、`TagWriter`、`NodeBrowser`、`FunctionInvoker`。
+2. 旧版双向北向插件继续实现 `core.NorthHandler`；仅上行插件可实现 `core.NorthMessageHandler`，下行能力通过 `NorthAppConfig.CommandExecutor` 回调 Runner。
+3. 点组与北向应用使用关系表持久化多对多绑定，`northAppId` 逗号字段只保留为现有 API 兼容层。
+4. 插件代码随主程序编译发布，当前不是运行时上传二进制插件。
+5. 插件配置必须通过 `ExtensionDescriptor` 暴露 Schema，前端通过 `DynamicConfigForm.vue` 动态渲染。
+6. 新增插件时优先补充描述符、配置校验、定向测试和运维状态来源，不为单个插件硬编码专用页面。
 
 更完整的生命周期、热加载、状态聚合和新增插件步骤见 [运维中心设计与实现说明](operations-center-design.md)。

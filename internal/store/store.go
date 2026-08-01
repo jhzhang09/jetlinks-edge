@@ -91,17 +91,40 @@ func (s *Store) DB() *gorm.DB { return s.db }
 
 // Migrate 自动迁移表结构。
 func (s *Store) Migrate() error {
-	err := s.db.AutoMigrate(&core.Connection{}, &core.Group{}, &core.Tag{}, &User{}, &core.NorthApp{})
+	err := s.db.AutoMigrate(&core.Connection{}, &core.Group{}, &core.Tag{}, &User{}, &core.NorthApp{}, &core.GroupNorthAppBinding{})
 	if err != nil {
 		return err
 	}
-	s.runDataMigration()
-	return nil
+	if err := s.runDataMigration(); err != nil {
+		return err
+	}
+	return s.migrateNorthAppBindings()
 }
 
-func (s *Store) runDataMigration() {
+// migrateNorthAppBindings 将旧 north_app_id 逗号列表幂等迁移到关系表。
+// 旧列继续保留并同步，以兼容现有 API 和旧版程序。
+func (s *Store) migrateNorthAppBindings() error {
+	var groups []core.Group
+	if err := s.db.Where("north_app_id IS NOT NULL AND north_app_id <> ''").Find(&groups).Error; err != nil {
+		return err
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		for _, group := range groups {
+			for _, appID := range splitNorthAppIDs(group.NorthAppID) {
+				binding := core.GroupNorthAppBinding{GroupID: group.ID, NorthAppID: appID}
+				if err := tx.Where("group_id = ? AND north_app_id = ?", group.ID, appID).
+					FirstOrCreate(&binding).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func (s *Store) runDataMigration() error {
 	if !s.db.Migrator().HasColumn(&core.Group{}, "driver") {
-		return
+		return nil
 	}
 	type TempGroup struct {
 		ID         string `gorm:"column:id"`
@@ -111,8 +134,11 @@ func (s *Store) runDataMigration() {
 	}
 	var oldGroups []TempGroup
 	err := s.db.Raw("SELECT id, name, driver, config FROM groups WHERE driver IS NOT NULL AND driver != '' AND (connection_id IS NULL OR connection_id = '')").Scan(&oldGroups).Error
-	if err != nil || len(oldGroups) == 0 {
-		return
+	if err != nil {
+		return err
+	}
+	if len(oldGroups) == 0 {
+		return nil
 	}
 
 	for _, og := range oldGroups {
@@ -129,7 +155,11 @@ func (s *Store) runDataMigration() {
 		}
 
 		var oldConfig map[string]interface{}
-		_ = json.Unmarshal([]byte(og.ConfigJSON), &oldConfig)
+		if og.ConfigJSON != "" {
+			if err := json.Unmarshal([]byte(og.ConfigJSON), &oldConfig); err != nil {
+				return fmt.Errorf("decode legacy group %s config: %w", og.ID, err)
+			}
+		}
 
 		newGroupConfig := map[string]interface{}{}
 		if oldConfig != nil {
@@ -139,17 +169,23 @@ func (s *Store) runDataMigration() {
 		}
 		newGroupConfigJSON := "{}"
 		if len(newGroupConfig) > 0 {
-			b, _ := json.Marshal(newGroupConfig)
+			b, err := json.Marshal(newGroupConfig)
+			if err != nil {
+				return fmt.Errorf("encode migrated group %s config: %w", og.ID, err)
+			}
 			newGroupConfigJSON = string(b)
 		}
 
-		_ = s.db.Transaction(func(tx *gorm.DB) error {
+		if err := s.db.Transaction(func(tx *gorm.DB) error {
 			if err := tx.Save(conn).Error; err != nil {
 				return err
 			}
 			return tx.Exec("UPDATE groups SET connection_id = ?, config = ?, driver = '' WHERE id = ?", connID, newGroupConfigJSON, og.ID).Error
-		})
+		}); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // SeedDefaultUser 创建默认账号（若不存在）。
@@ -193,36 +229,7 @@ func (s *Store) ListGroups(ctx context.Context) ([]*core.Group, error) {
 	if err := s.db.WithContext(ctx).Find(&gs).Error; err != nil {
 		return nil, err
 	}
-	connIDs := make([]string, 0, len(gs))
-	for _, g := range gs {
-		if g.ConnectionID != "" {
-			connIDs = append(connIDs, g.ConnectionID)
-		}
-	}
-	connMap := make(map[string]string)
-	if len(connIDs) > 0 {
-		var conns []core.Connection
-		if err := s.db.WithContext(ctx).Where("id IN ?", connIDs).Find(&conns).Error; err == nil {
-			for _, c := range conns {
-				connMap[c.ID] = c.Driver
-			}
-		}
-	}
-	out := make([]*core.Group, 0, len(gs))
-	for i := range gs {
-		gs[i].UnmarshalConfig()
-		gs[i].Interval = time.Duration(gs[i].IntervalMs) * time.Millisecond
-		if drv, ok := connMap[gs[i].ConnectionID]; ok {
-			gs[i].Driver = drv
-		}
-		out = append(out, &gs[i])
-	}
-	return out, nil
-}
-
-func (s *Store) ListEnabledGroups(ctx context.Context) ([]*core.Group, error) {
-	var gs []core.Group
-	if err := s.db.WithContext(ctx).Where("enabled = ?", true).Find(&gs).Error; err != nil {
+	if err := s.populateGroupBindings(ctx, gs); err != nil {
 		return nil, err
 	}
 	connIDs := make([]string, 0, len(gs))
@@ -242,7 +249,46 @@ func (s *Store) ListEnabledGroups(ctx context.Context) ([]*core.Group, error) {
 	}
 	out := make([]*core.Group, 0, len(gs))
 	for i := range gs {
-		gs[i].UnmarshalConfig()
+		if err := gs[i].UnmarshalConfig(); err != nil {
+			return nil, fmt.Errorf("decode group %s: %w", gs[i].ID, err)
+		}
+		gs[i].Interval = time.Duration(gs[i].IntervalMs) * time.Millisecond
+		if drv, ok := connMap[gs[i].ConnectionID]; ok {
+			gs[i].Driver = drv
+		}
+		out = append(out, &gs[i])
+	}
+	return out, nil
+}
+
+func (s *Store) ListEnabledGroups(ctx context.Context) ([]*core.Group, error) {
+	var gs []core.Group
+	if err := s.db.WithContext(ctx).Where("enabled = ?", true).Find(&gs).Error; err != nil {
+		return nil, err
+	}
+	if err := s.populateGroupBindings(ctx, gs); err != nil {
+		return nil, err
+	}
+	connIDs := make([]string, 0, len(gs))
+	for _, g := range gs {
+		if g.ConnectionID != "" {
+			connIDs = append(connIDs, g.ConnectionID)
+		}
+	}
+	connMap := make(map[string]string)
+	if len(connIDs) > 0 {
+		var conns []core.Connection
+		if err := s.db.WithContext(ctx).Where("id IN ?", connIDs).Find(&conns).Error; err == nil {
+			for _, c := range conns {
+				connMap[c.ID] = c.Driver
+			}
+		}
+	}
+	out := make([]*core.Group, 0, len(gs))
+	for i := range gs {
+		if err := gs[i].UnmarshalConfig(); err != nil {
+			return nil, fmt.Errorf("decode group %s: %w", gs[i].ID, err)
+		}
 		gs[i].Interval = time.Duration(gs[i].IntervalMs) * time.Millisecond
 		if drv, ok := connMap[gs[i].ConnectionID]; ok {
 			gs[i].Driver = drv
@@ -260,22 +306,69 @@ func (s *Store) GetGroup(ctx context.Context, id string) (*core.Group, error) {
 		}
 		return nil, err
 	}
-	g.UnmarshalConfig()
+	if err := g.UnmarshalConfig(); err != nil {
+		return nil, fmt.Errorf("decode group %s: %w", g.ID, err)
+	}
+	groups := []core.Group{g}
+	if err := s.populateGroupBindings(ctx, groups); err != nil {
+		return nil, err
+	}
+	g = groups[0]
 	g.Interval = time.Duration(g.IntervalMs) * time.Millisecond
 	s.PopulateGroupDriver(&g)
 	return &g, nil
 }
 
 func (s *Store) SaveGroup(ctx context.Context, g *core.Group) error {
-	g.MarshalConfig()
+	return s.persistGroup(ctx, g, false)
+}
+
+// CreateGroup 新建点组及其北向绑定，已存在的主键不会被覆盖。
+func (s *Store) CreateGroup(ctx context.Context, g *core.Group) error {
+	return s.persistGroup(ctx, g, true)
+}
+
+func (s *Store) persistGroup(ctx context.Context, g *core.Group, create bool) error {
+	if err := g.MarshalConfig(); err != nil {
+		return err
+	}
 	if g.IntervalMs == 0 {
 		g.IntervalMs = 1000
 	}
-	return s.db.WithContext(ctx).Save(g).Error
+	requestedEnabled := g.Enabled
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var result *gorm.DB
+		if create {
+			result = tx.Create(g)
+		} else {
+			result = tx.Save(g)
+		}
+		if err := result.Error; err != nil {
+			return err
+		}
+		if create && g.Enabled != requestedEnabled {
+			if err := tx.Model(g).UpdateColumn("enabled", requestedEnabled).Error; err != nil {
+				return err
+			}
+			g.Enabled = requestedEnabled
+		}
+		if err := tx.Where("group_id = ?", g.ID).Delete(&core.GroupNorthAppBinding{}).Error; err != nil {
+			return err
+		}
+		for _, appID := range splitNorthAppIDs(g.NorthAppID) {
+			if err := tx.Create(&core.GroupNorthAppBinding{GroupID: g.ID, NorthAppID: appID}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (s *Store) DeleteGroup(ctx context.Context, id string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("group_id = ?", id).Delete(&core.GroupNorthAppBinding{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("group_id = ?", id).Delete(&core.Tag{}).Error; err != nil {
 			return err
 		}
@@ -284,7 +377,9 @@ func (s *Store) DeleteGroup(ctx context.Context, id string) error {
 }
 
 func (s *Store) SaveTag(ctx context.Context, t *core.Tag) error {
-	t.MarshalConfig()
+	if err := t.MarshalConfig(); err != nil {
+		return err
+	}
 	return s.db.WithContext(ctx).Save(t).Error
 }
 
@@ -299,7 +394,9 @@ func (s *Store) ListTagsByGroup(ctx context.Context, groupID string) ([]*core.Ta
 	}
 	out := make([]*core.Tag, 0, len(ts))
 	for i := range ts {
-		ts[i].UnmarshalConfig()
+		if err := ts[i].UnmarshalConfig(); err != nil {
+			return nil, fmt.Errorf("decode tag %s: %w", ts[i].ID, err)
+		}
 		out = append(out, &ts[i])
 	}
 	return out, nil
@@ -313,7 +410,9 @@ func (s *Store) GetTag(ctx context.Context, id string) (*core.Tag, error) {
 		}
 		return nil, err
 	}
-	t.UnmarshalConfig()
+	if err := t.UnmarshalConfig(); err != nil {
+		return nil, fmt.Errorf("decode tag %s: %w", t.ID, err)
+	}
 	return &t, nil
 }
 
@@ -326,7 +425,9 @@ func (s *Store) ListNorthApps(ctx context.Context) ([]*core.NorthApp, error) {
 	}
 	out := make([]*core.NorthApp, 0, len(ns))
 	for i := range ns {
-		ns[i].UnmarshalConfig()
+		if err := ns[i].UnmarshalConfig(); err != nil {
+			return nil, fmt.Errorf("decode north app %s: %w", ns[i].ID, err)
+		}
 		out = append(out, &ns[i])
 	}
 	return out, nil
@@ -339,7 +440,9 @@ func (s *Store) ListEnabledNorthApps(ctx context.Context) ([]*core.NorthApp, err
 	}
 	out := make([]*core.NorthApp, 0, len(ns))
 	for i := range ns {
-		ns[i].UnmarshalConfig()
+		if err := ns[i].UnmarshalConfig(); err != nil {
+			return nil, fmt.Errorf("decode north app %s: %w", ns[i].ID, err)
+		}
 		out = append(out, &ns[i])
 	}
 	return out, nil
@@ -353,22 +456,53 @@ func (s *Store) GetNorthApp(ctx context.Context, id string) (*core.NorthApp, err
 		}
 		return nil, err
 	}
-	n.UnmarshalConfig()
+	if err := n.UnmarshalConfig(); err != nil {
+		return nil, fmt.Errorf("decode north app %s: %w", n.ID, err)
+	}
 	return &n, nil
 }
 
 func (s *Store) SaveNorthApp(ctx context.Context, n *core.NorthApp) error {
+	return s.persistNorthApp(ctx, n, false)
+}
+
+// CreateNorthApp 新建北向应用，已存在的主键不会被覆盖。
+func (s *Store) CreateNorthApp(ctx context.Context, n *core.NorthApp) error {
+	return s.persistNorthApp(ctx, n, true)
+}
+
+func (s *Store) persistNorthApp(ctx context.Context, n *core.NorthApp, create bool) error {
 	if n.CreatedAt.IsZero() {
 		n.CreatedAt = time.Now()
 	}
 	n.UpdatedAt = time.Now()
-	n.MarshalConfig()
+	if err := n.MarshalConfig(); err != nil {
+		return err
+	}
+	if create {
+		requestedEnabled := n.Enabled
+		return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := tx.Create(n).Error; err != nil {
+				return err
+			}
+			if n.Enabled != requestedEnabled {
+				if err := tx.Model(n).UpdateColumn("enabled", requestedEnabled).Error; err != nil {
+					return err
+				}
+				n.Enabled = requestedEnabled
+			}
+			return nil
+		})
+	}
 	return s.db.WithContext(ctx).Save(n).Error
 }
 
 func (s *Store) DeleteNorthApp(ctx context.Context, id string) error {
 	// 解除所有引用此 NorthApp 的 Group 的绑定（支持逗号分隔多北向绑定）
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("north_app_id = ?", id).Delete(&core.GroupNorthAppBinding{}).Error; err != nil {
+			return err
+		}
 		var groups []core.Group
 		if err := tx.Where("north_app_id LIKE ?", "%"+id+"%").Find(&groups).Error; err != nil {
 			return err
@@ -383,6 +517,50 @@ func (s *Store) DeleteNorthApp(ctx context.Context, id string) error {
 		}
 		return tx.Delete(&core.NorthApp{}, "id = ?", id).Error
 	})
+}
+
+func splitNorthAppIDs(ids string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0)
+	for _, id := range strings.Split(ids, ",") {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+func (s *Store) populateGroupBindings(ctx context.Context, groups []core.Group) error {
+	if len(groups) == 0 {
+		return nil
+	}
+	groupIDs := make([]string, 0, len(groups))
+	for i := range groups {
+		groupIDs = append(groupIDs, groups[i].ID)
+	}
+	var bindings []core.GroupNorthAppBinding
+	if err := s.db.WithContext(ctx).
+		Where("group_id IN ?", groupIDs).
+		Order("created_at asc, north_app_id asc").
+		Find(&bindings).Error; err != nil {
+		return err
+	}
+	byGroup := make(map[string][]string)
+	for _, binding := range bindings {
+		byGroup[binding.GroupID] = append(byGroup[binding.GroupID], binding.NorthAppID)
+	}
+	for i := range groups {
+		if ids := byGroup[groups[i].ID]; len(ids) > 0 {
+			groups[i].NorthAppID = strings.Join(ids, ",")
+		}
+	}
+	return nil
 }
 
 // ============ 鉴权 ============
@@ -473,7 +651,9 @@ func (s *Store) ListConnections(ctx context.Context) ([]*core.Connection, error)
 	}
 	out := make([]*core.Connection, 0, len(conns))
 	for i := range conns {
-		conns[i].UnmarshalConfig()
+		if err := conns[i].UnmarshalConfig(); err != nil {
+			return nil, fmt.Errorf("decode connection %s: %w", conns[i].ID, err)
+		}
 		out = append(out, &conns[i])
 	}
 	return out, nil
@@ -486,7 +666,9 @@ func (s *Store) ListEnabledConnections(ctx context.Context) ([]*core.Connection,
 	}
 	out := make([]*core.Connection, 0, len(conns))
 	for i := range conns {
-		conns[i].UnmarshalConfig()
+		if err := conns[i].UnmarshalConfig(); err != nil {
+			return nil, fmt.Errorf("decode connection %s: %w", conns[i].ID, err)
+		}
 		out = append(out, &conns[i])
 	}
 	return out, nil
@@ -500,16 +682,44 @@ func (s *Store) GetConnection(ctx context.Context, id string) (*core.Connection,
 		}
 		return nil, err
 	}
-	conn.UnmarshalConfig()
+	if err := conn.UnmarshalConfig(); err != nil {
+		return nil, fmt.Errorf("decode connection %s: %w", conn.ID, err)
+	}
 	return &conn, nil
 }
 
 func (s *Store) SaveConnection(ctx context.Context, conn *core.Connection) error {
+	return s.persistConnection(ctx, conn, false)
+}
+
+// CreateConnection 新建物理连接，已存在的主键不会被覆盖。
+func (s *Store) CreateConnection(ctx context.Context, conn *core.Connection) error {
+	return s.persistConnection(ctx, conn, true)
+}
+
+func (s *Store) persistConnection(ctx context.Context, conn *core.Connection, create bool) error {
 	if conn.CreatedAt.IsZero() {
 		conn.CreatedAt = time.Now()
 	}
 	conn.UpdatedAt = time.Now()
-	conn.MarshalConfig()
+	if err := conn.MarshalConfig(); err != nil {
+		return err
+	}
+	if create {
+		requestedEnabled := conn.Enabled
+		return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := tx.Create(conn).Error; err != nil {
+				return err
+			}
+			if conn.Enabled != requestedEnabled {
+				if err := tx.Model(conn).UpdateColumn("enabled", requestedEnabled).Error; err != nil {
+					return err
+				}
+				conn.Enabled = requestedEnabled
+			}
+			return nil
+		})
+	}
 	return s.db.WithContext(ctx).Save(conn).Error
 }
 
@@ -520,6 +730,9 @@ func (s *Store) DeleteConnection(ctx context.Context, id string) error {
 			return err
 		}
 		for _, g := range groups {
+			if err := tx.Where("group_id = ?", g.ID).Delete(&core.GroupNorthAppBinding{}).Error; err != nil {
+				return err
+			}
 			if err := tx.Where("group_id = ?", g.ID).Delete(&core.Tag{}).Error; err != nil {
 				return err
 			}
