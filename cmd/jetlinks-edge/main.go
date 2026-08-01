@@ -41,7 +41,7 @@ import (
 var version = "dev"
 
 // @title           JetLinks Edge API
-// @version         0.1
+// @version         0.5.0
 // @description     JetLinks 边缘网关管理 API
 // @BasePath        /api
 func main() {

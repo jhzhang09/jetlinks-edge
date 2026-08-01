@@ -3,7 +3,7 @@
 JetLinks 平台的 Go 语言边缘网关。**当前已实现**：Modbus TCP / OPC UA 采集 → JetLinks MQTT / Generic MQTT 上送。
 **预留扩展**：南向驱动（Siemens S7、Modbus RTU、BACnet、MQTT-Client…）和北向传输（HTTP webhook、Sparkplug B、InfluxDB…）均可通过接口扩展。
 
-> **v0.4 · Industrial Terminal Edition**：中英双语界面 · JetLinks 网关+子设备模型按官方协议 V1.3.1 · SM3 认证 · 全平台二进制打包 (linux/mac/win) · 单项自包含部署
+> **v0.5 · Pluggable Runtime Edition**：可插拔南向采集与北向传输 · JetLinks 网关+子设备模型按官方协议 V1.3.1 · MD5 动态认证 · 全平台自包含发布包
 
 > 架构参考 [EMQX Neuron](https://github.com/emqx/neuron)：南向驱动 + 北向传输 + 点组/点位模型 + Web 管理。
 
@@ -71,7 +71,7 @@ JetLinks 平台的 Go 语言边缘网关。**当前已实现**：Modbus TCP / OP
 *   [OPC UA 采集插件](docs/south-opcua.md) - 支持安全策略、用户名/密码认证以及**基于 Browse 的节点树可视化批量添加点位**的最佳实践。
 
 ### 北向传输插件
-*   [JetLinks MQTT 传输插件](docs/north-jetlinks.md) - 实现网关+子设备接入模型、SM3 国密算法动态哈希签名认证及数据按官方协议格式上送。
+*   [JetLinks MQTT 传输插件](docs/north-jetlinks.md) - 实现网关+子设备接入模型、MD5 动态认证及数据按官方协议格式上送。
 *   [Generic MQTT 传输插件](docs/north-generic.md) - 支持向通用 MQTT Broker（如 EMQX、Mosquitto）推送采集值，并支持基于自定义 Topic 的下行指令回写控制。
 
 ## 目录结构
@@ -83,7 +83,7 @@ jetlinks-edge/
 │   ├── config/               # 配置加载（支持环境变量覆盖）
 │   ├── core/                 # 核心：Driver / NorthApp 接口 + Runner 调度器 + refCount 订阅
 │   ├── driver/modbus/        # Modbus TCP 南向驱动（区域合并、批量读取）
-│   ├── northbound/jetlinksmqtt/ # JetLinks MQTT 北向传输（网关+子设备模型、SM3 认证、refCount 按需订阅）
+│   ├── northbound/jetlinksmqtt/ # JetLinks MQTT 北向传输（网关+子设备模型、MD5 认证、refCount 按需订阅）
 │   ├── store/                # 持久化（SQLite / PostgreSQL）
 │   ├── web/                  # HTTP API（Gin + JWT）
 │   └── logger/               # zap 结构化日志
@@ -157,7 +157,7 @@ make web-dev
 ### 1. 在 JetLinks 平台准备工作
 
 1. 创建**网关产品**（或复用现有产品）
-2. 在该产品下创建**多台子设备**（不需要单独的 secureKey / SM3 密码）
+2. 在该产品下创建**多台子设备**（不需要单独的 secureKey / MD5 密码）
 3. 确认 JetLinks 内置 MQTT broker 可用（默认端口 11883 或 1883）
 4. 给网关产品配置好接入账号（**网关级** token，不是设备级）
 
@@ -182,7 +182,7 @@ make web-dev
 **认证**（程序自动按 JetLinks 规范计算）：
 - `clientId` = `deviceId`
 - `username` = `secureId + "|" + timestamp`（timestamp = 当前毫秒时间戳）
-- `password` = `SM3(secureId + "|" + timestamp + "|" + secureKey)`（大写十六进制）
+- `password` = `MD5(secureId + "|" + timestamp + "|" + secureKey)`（大写十六进制）
 
 > 共享的 MQTT 连接长跑时，程序会每 `timestampDelta/2` 秒主动重建连接，刷新 timestamp，避免平台规则"差 < 5 分钟"过期。
 > broker 不可达时**也能创建成功**，实例会在后台持续重连。
@@ -235,11 +235,11 @@ make web-dev
 | 删除网关 | 自动解除所有子设备的绑定 + 销毁共享连接 |
 | 临时停用上送 | 编辑网关把"启用"关掉，或编辑点组清空"网关" |
 
-### 4. 关于"每设备独立连接"模式（v0.4 预留）
+### 4. 关于"每设备独立连接"模式（后续版本预留）
 
-JetLinks 也支持"每台设备作为独立 MQTT 客户端"模式：clientId=deviceId、username=secureId+'|'+timestamp、password=SM3(...)。这种模式**更接近设备原始规范**，但 1000 设备要 1000 个 MQTT 连接，平台可能不支持这种规模。
+JetLinks 也支持"每台设备作为独立 MQTT 客户端"模式：clientId=deviceId、username=secureId+'|'+timestamp、password=MD5(...)。这种模式**更接近设备原始规范**，但 1000 设备要 1000 个 MQTT 连接，平台可能不支持这种规模。
 
-**JetLinks Edge 默认采用"网关+子设备"模式**（即本文档描述）。如确需"每设备独立连接 + SM3 认证"模式，请通过 issue 提出（会在 v0.4+ 实现 mode=direct 选项）。
+**JetLinks Edge 默认采用"网关+子设备"模式**（即本文档描述）。如确需"每设备独立连接 + MD5 认证"模式，请通过 issue 提出，后续可扩展 `mode=direct` 选项。
 
 ### 5. 平台下发指令
 
@@ -638,7 +638,7 @@ go test ./pkg/modbuslib/...
 （`internal/*` 包的单元测试需要抽象 Store / Driver 接口的 fake 实现，可以参考
 `core.Store` 写一个内存版 fake。）
 
-## 已知限制（v0.4）
+## 已知限制（v0.5）
 
 - **南向采集限制**：当前内置 Modbus TCP 与 OPC UA，RTU 串口版本未实现；可通过南向插件接口继续扩展。
 - **用户权限控制**：目前统一使用默认的 `admin` 管理员账号，暂不支持多用户及细粒度的角色权限划分。
@@ -646,7 +646,16 @@ go test ./pkg/modbuslib/...
 
 ## 版本历史 (Changelog)
 
-### v0.4 (Current)
+### v0.5.0 (Current)
+* **插件运行时加固**：保留现有插件接口兼容性，新增按能力组合的南向/北向扩展接口，并完善热更新、停止、重连和实例替换的生命周期边界。
+* **多北向绑定**：点组与北向应用支持多对多关系持久化，旧 `northAppId` 字段继续作为 API 兼容层并自动迁移。
+* **命令与传输可靠性**：增加北向命令归属校验、可选功能调用、MQTT QoS 0/1、有界并发、操作超时和投递统计。
+* **配置安全**：增加敏感配置脱敏、密码占位符更新、生产环境默认凭据保护以及 JSON 配置错误传播。
+* **并发与资源管理**：修复点位配置共享 Map 风险，串行化热更新生命周期，拆分高频点位缓存锁，并完善 EventBus 退订和 MQTT 关闭流程。
+* **控制台体验**：统一页面标题和时间格式，抽取修改密码组件，修复浅色主题对比度和事件监听释放问题，并补充 Web Console 预览图。
+* **认证文档纠正**：JetLinks MQTT 动态密码公式统一为官方协议规定的 `MD5(secureId|timestamp|secureKey)`。
+
+### v0.4
 * **三层拓扑重构**：重塑了整体工业拓扑物理链路，拆分并解耦为 **“南向采集 - 采集组 - 点位”** 三层拓扑架构，实现了多路逻辑采集组对单一南向采集的链路连接复用（物理链路多组复用）。
 * **批量查询性能优化**：对后端数据层加载（GORM / GORM Session）进行了深入的重构与性能剖析，引入 Batch 批量通道映射，彻底清除了点组/点位列表加载时的多次循环 N+1 SQL 瓶颈。
 * **等高与精致化拓扑图大屏**：重构了 Web 实时拓扑页面（`TopologyView.vue`），统一卡片为 **86px 固定等高** 排布以实现像素级对齐线，并将状态 Badge（已连接/离线/停止）尺寸精致缩小（`font-size: 8.5px`，`padding: 1.5px 5px`），呼吸圆点降至 `5px`，美观紧致。
@@ -660,7 +669,7 @@ go test ./pkg/modbuslib/...
 
 ### v0.3
 * **北向上送**：实现了 **JetLinks 官方网关与子设备映射模型**。支持多个子设备逻辑实体（点组）共享同一条物理 MQTT 网关长连接上报。
-* **国密安全**：引入基于 SM3 算法的动态计算鉴权与连接机制，新增 timestamp 周期自动刷新与长连接重连防超时过期。
+* **动态认证**：引入基于 MD5 公式的动态计算鉴权与连接机制，新增 timestamp 周期自动刷新与长连接重连防超时过期。
 * **业务管理**：提供了独立的北向传输管理及南向子设备点组的注册、上线与数据上送控制。
 
 ### v0.2
@@ -674,13 +683,13 @@ go test ./pkg/modbuslib/...
 
 ## 后续路线图 (Roadmap)
 
-### 近期计划 (v0.5)
+### 近期计划 (v0.6)
 - **南向协议扩展**：开发 Modbus RTU（串口 RS485/RS232）南向通道驱动。
 - **高可用优化**：引入多实例部署下的缓存同步机制，设计基于 Redis 的分布式锁与状态发布订阅。
 - **数据本地暂存**：支持断线重连期间的本地时序数据暂存（数据缓冲），在 MQTT 连接恢复后自动补发。
 
-### 中期计划 (v0.6)
-- **主流工控协议集成**：引入 OPC-UA 驱动和西门子 S7 协议驱动。
+### 中期计划 (v0.7)
+- **主流工控协议集成**：引入西门子 S7 协议驱动。
 - **北向传输规范**：支持 Sparkplug B 工业物联网规范协议的北向上送。
 - **OTA 与热配置**：支持配置模板的一键热导入与导出，设计轻量级系统固件与网关在线 OTA 升级。
 

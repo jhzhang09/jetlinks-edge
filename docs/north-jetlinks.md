@@ -30,14 +30,14 @@
 
 ---
 
-## 3. 安全认证机制：SM3 动态哈希认证
+## 3. 安全认证机制：MD5 动态摘要认证
 
-为了防止静态密码在传输中被拦截窃取，插件严格遵循 JetLinks 平台规范，采用 **SM3 国密摘要签名算法** 进行动态哈希计算：
+插件严格遵循 JetLinks 平台 MQTT 接入规范，使用带时间戳的 **MD5 动态摘要**生成认证密码：
 
 1.  **认证信息生成**：
     *   **`clientId`** = 网关设备的 `deviceId`
     *   **`username`** = `secureId + "|" + timestamp`（timestamp 为当前高精度毫秒时间戳）
-    *   **`password`** = `SM3(secureId + "|" + timestamp + "|" + secureKey)`（大写十六进制串）
+    *   **`password`** = `MD5(secureId + "|" + timestamp + "|" + secureKey)`（32 位大写十六进制串）
 2.  **动态重连更新**：
     *   由于平台通常要求时间戳偏差必须在容差内（默认 5 分钟），本插件会在长跑时，每隔 `tsDelta / 2` 秒在后台平滑重建 MQTT 链路认证，动态刷新 timestamp 并更新哈希签名，彻底防范链路重放攻击和认证超时断线。
 
