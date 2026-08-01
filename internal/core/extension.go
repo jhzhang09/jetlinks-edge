@@ -17,6 +17,9 @@ const (
 	ConfigFieldTextarea ConfigFieldType = "textarea"
 )
 
+// MaskedSecret 是管理 API 返回密码字段时使用的占位符。
+const MaskedSecret = "********"
+
 // ConfigOption 是 select 配置字段的可选项。
 type ConfigOption struct {
 	Label string      `json:"label"`
@@ -64,6 +67,37 @@ func ApplyConfigDefaults(schema []ConfigField, config map[string]interface{}) ma
 	return out
 }
 
+// MergeSensitiveConfig 在更新配置时保留未重新输入的密码字段。
+func MergeSensitiveConfig(schema []ConfigField, incoming, existing map[string]interface{}) map[string]interface{} {
+	out := ApplyConfigDefaults(nil, incoming)
+	for _, field := range schema {
+		if field.Type != ConfigFieldPassword {
+			continue
+		}
+		value, exists := out[field.Key]
+		text, isString := value.(string)
+		if !exists || (isString && (text == "" || text == MaskedSecret)) {
+			if oldValue, ok := existing[field.Key]; ok {
+				out[field.Key] = oldValue
+			}
+		}
+	}
+	return out
+}
+
+// RedactSensitiveConfig 返回隐藏密码字段后的配置副本。
+func RedactSensitiveConfig(schema []ConfigField, config map[string]interface{}) map[string]interface{} {
+	out := ApplyConfigDefaults(nil, config)
+	for _, field := range schema {
+		if field.Type == ConfigFieldPassword {
+			if value, exists := out[field.Key]; exists && !isEmptyString(value) {
+				out[field.Key] = MaskedSecret
+			}
+		}
+	}
+	return out
+}
+
 // ValidateConfig 按 Schema 校验插件私有配置。
 func ValidateConfig(schema []ConfigField, config map[string]interface{}) error {
 	for _, field := range schema {
@@ -76,8 +110,12 @@ func ValidateConfig(schema []ConfigField, config map[string]interface{}) error {
 		}
 		switch field.Type {
 		case ConfigFieldText, ConfigFieldPassword, ConfigFieldTextarea:
-			if _, ok := value.(string); !ok {
+			text, ok := value.(string)
+			if !ok {
 				return fmt.Errorf("config.%s must be a string", field.Key)
+			}
+			if field.Type == ConfigFieldPassword && text == MaskedSecret {
+				return fmt.Errorf("config.%s must be provided", field.Key)
 			}
 		case ConfigFieldNumber:
 			number, ok := asFloat64(value)

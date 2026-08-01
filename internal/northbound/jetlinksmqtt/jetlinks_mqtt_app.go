@@ -36,6 +36,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -48,6 +49,8 @@ import (
 
 // DriverName 北向应用类型名。
 const DriverName = "jetlinks-mqtt"
+
+const mqttOperationTimeout = 10 * time.Second
 
 // AppConfig 北向应用配置（v0.4 - 符合 JetLinks 平台 MQTT 认证规范）。
 //
@@ -75,6 +78,7 @@ type AppConfig struct {
 	CleanSession   bool   `json:"cleanSession"`   // 默认 true
 	KeepAlive      int    `json:"keepAlive"`      // 秒，默认 30
 	TimestampDelta int    `json:"timestampDelta"` // timestamp 容差（秒），默认 300
+	QoS            byte   `json:"qos"`            // MQTT 交付等级，0=最多一次，1=至少一次
 }
 
 // NewApp 北向应用工厂。
@@ -89,6 +93,7 @@ func NewApp(ctx context.Context, appID string, cfg core.NorthAppConfig) (core.No
 	if ac.TimestampDelta == 0 {
 		ac.TimestampDelta = 300
 	}
+	appCtx, cancel := context.WithCancel(ctx)
 	a := &app{
 		appID:           appID,
 		cfg:             ac,
@@ -97,14 +102,24 @@ func NewApp(ctx context.Context, appID string, cfg core.NorthAppConfig) (core.No
 		pendCh:          make(chan pending, 256),
 		commandExecutor: cfg.CommandExecutor,
 		statusProvider:  cfg.GroupStatusProvider,
-		ctx:             ctx,
+		ctx:             appCtx,
+		cancel:          cancel,
 		startTime:       time.Now(),
 	}
 	if !a.connectWithTimeout(3 * time.Second) {
 		a.startReconnectLoop()
 	}
-	go a.dispatch(ctx)
-	go a.gatewayPropertiesReportLoop(ctx)
+	for range 4 {
+		a.commandWG.Add(1)
+		go a.dispatch(appCtx)
+	}
+	a.lifecycleMu.Lock()
+	a.lifecycleWG.Add(1)
+	a.lifecycleMu.Unlock()
+	go func() {
+		defer a.lifecycleWG.Done()
+		a.gatewayPropertiesReportLoop(appCtx)
+	}()
 	return a, nil
 }
 
@@ -123,7 +138,20 @@ func (a *app) startReconnectLoop() {
 	a.reconnecting = true
 	a.reconnectMu.Unlock()
 
-	go a.reconnectLoop(a.ctx)
+	a.lifecycleMu.Lock()
+	if a.closing {
+		a.lifecycleMu.Unlock()
+		a.reconnectMu.Lock()
+		a.reconnecting = false
+		a.reconnectMu.Unlock()
+		return
+	}
+	a.lifecycleWG.Add(1)
+	a.lifecycleMu.Unlock()
+	go func() {
+		defer a.lifecycleWG.Done()
+		a.reconnectLoop(a.ctx)
+	}()
 }
 
 // reconnectLoop 自定义断网后台重连逻辑。
@@ -179,6 +207,7 @@ func Descriptor() core.ExtensionDescriptor {
 			{Key: "cleanSession", Label: "清理会话", Type: core.ConfigFieldBoolean, DefaultValue: true},
 			{Key: "keepAlive", Label: "Keep Alive（秒）", Type: core.ConfigFieldNumber, DefaultValue: 30, Min: jetlinksNumberPointer(5), Max: jetlinksNumberPointer(3600)},
 			{Key: "timestampDelta", Label: "时间戳容差（秒）", Type: core.ConfigFieldNumber, DefaultValue: 300, Min: jetlinksNumberPointer(60), Max: jetlinksNumberPointer(600)},
+			{Key: "qos", Label: "QoS", Type: core.ConfigFieldSelect, DefaultValue: 0, Options: []core.ConfigOption{{Label: "0 - 最多一次", Value: 0}, {Label: "1 - 至少一次", Value: 1}}},
 		},
 	}
 }
@@ -205,6 +234,9 @@ func parseAppConfig(m map[string]interface{}) (AppConfig, error) {
 	}
 	if cfg.ProductID == "" || cfg.DeviceID == "" {
 		return cfg, fmt.Errorf("jetlinks: productId and deviceId are required")
+	}
+	if cfg.QoS > 1 {
+		return cfg, fmt.Errorf("jetlinks: qos must be 0 or 1")
 	}
 	// Username/Password 都为空时启用 SM3 自动认证
 	// 此时必须提供 productId + secureId + secureKey + deviceId
@@ -272,9 +304,13 @@ type app struct {
 	client    mqtt.Client
 	startTime time.Time
 	ctx       context.Context // 北向应用 Context，用于重连感知退出
+	cancel    context.CancelFunc
 
 	reconnectMu  sync.Mutex
 	reconnecting bool
+	lifecycleMu  sync.Mutex
+	lifecycleWG  sync.WaitGroup
+	closing      bool
 
 	// groups: deviceKey (productId+"/"+deviceId) -> *core.Group
 	// 注：Group 不属于 NorthApp 生命周期，仅用于下行消息路由。
@@ -284,7 +320,12 @@ type app struct {
 	subMu      sync.Mutex     // 串行化订阅副作用，避免并发 reload 时旧退订覆盖新订阅
 
 	// 待处理指令：messageID -> chan reply
-	pendCh chan pending
+	pendCh         chan pending
+	commandWG      sync.WaitGroup
+	published      atomic.Int64
+	publishFailed  atomic.Int64
+	dropped        atomic.Int64
+	commandDropped atomic.Int64
 
 	commandExecutor core.NorthCommandExecutor
 	statusProvider  core.GroupStatusProvider
@@ -378,10 +419,10 @@ func (a *app) subscribeDevice(productID, deviceID string) {
 		return
 	}
 	topics := deviceChildTopics(a.cfg.ProductID, a.cfg.DeviceID, deviceID)
-	for t, q := range topics {
-		if token := client.Subscribe(t, q, a.onMessage); token.Wait() && token.Error() != nil {
+	for t := range topics {
+		if err := waitMQTTToken(a.ctx, client.Subscribe(t, a.cfg.QoS, a.onMessage)); err != nil {
 			zap.L().Error("jetlinks subscribe failed",
-				zap.String("topic", t), zap.Error(token.Error()))
+				zap.String("topic", t), zap.Error(err))
 		}
 	}
 	zap.L().Info("jetlinks subscribed to device topics",
@@ -407,9 +448,9 @@ func (a *app) unsubscribeDevice(productID, deviceID string) {
 	}
 	topics := deviceChildTopics(a.cfg.ProductID, a.cfg.DeviceID, deviceID)
 	for t := range topics {
-		if token := client.Unsubscribe(t); token.Wait() && token.Error() != nil {
+		if err := waitMQTTToken(a.ctx, client.Unsubscribe(t)); err != nil {
 			zap.L().Warn("jetlinks unsubscribe failed",
-				zap.String("topic", t), zap.Error(token.Error()))
+				zap.String("topic", t), zap.Error(err))
 		}
 	}
 	zap.L().Info("jetlinks unsubscribed from device topics",
@@ -492,7 +533,7 @@ func (a *app) onConnect(c mqtt.Client) {
 			}
 			// register
 			regTopic := topicChildRegister(a.cfg.ProductID, a.cfg.DeviceID, g.Device.DeviceID)
-			regPayload, _ := json.Marshal(map[string]interface{}{
+			regPayload, err := json.Marshal(map[string]interface{}{
 				"timestamp": now,
 				"messageId": uuid.NewString(),
 				"deviceId":  g.Device.DeviceID,
@@ -504,18 +545,30 @@ func (a *app) onConnect(c mqtt.Client) {
 					},
 				},
 			})
-			if token := c.Publish(regTopic, 0, false, regPayload); token.Wait() && token.Error() != nil {
-				zap.L().Warn("jetlinks publish child register failed", zap.Error(token.Error()))
+			if err != nil {
+				a.publishFailed.Add(1)
+				zap.L().Warn("jetlinks encode child register failed", zap.Error(err))
+				continue
+			}
+			if err := waitMQTTToken(a.ctx, c.Publish(regTopic, a.cfg.QoS, false, regPayload)); err != nil {
+				a.publishFailed.Add(1)
+				zap.L().Warn("jetlinks publish child register failed", zap.Error(err))
 			}
 			// online
 			onlineTopic := topicChildOnline(a.cfg.ProductID, a.cfg.DeviceID, g.Device.DeviceID)
-			onlinePayload, _ := json.Marshal(map[string]interface{}{
+			onlinePayload, err := json.Marshal(map[string]interface{}{
 				"timestamp": now,
 				"messageId": uuid.NewString(),
 				"deviceId":  g.Device.DeviceID,
 			})
-			if token := c.Publish(onlineTopic, 0, false, onlinePayload); token.Wait() && token.Error() != nil {
-				zap.L().Warn("jetlinks publish child online failed", zap.Error(token.Error()))
+			if err != nil {
+				a.publishFailed.Add(1)
+				zap.L().Warn("jetlinks encode child online failed", zap.Error(err))
+				continue
+			}
+			if err := waitMQTTToken(a.ctx, c.Publish(onlineTopic, a.cfg.QoS, false, onlinePayload)); err != nil {
+				a.publishFailed.Add(1)
+				zap.L().Warn("jetlinks publish child online failed", zap.Error(err))
 			}
 			zap.L().Info("jetlinks child registered & online",
 				zap.String("gwProductId", a.cfg.ProductID),
@@ -528,6 +581,13 @@ func (a *app) onConnect(c mqtt.Client) {
 
 // onMessage 收到 broker 下推消息。
 func (a *app) onMessage(c mqtt.Client, m mqtt.Message) {
+	a.lifecycleMu.Lock()
+	closing := a.closing
+	a.lifecycleMu.Unlock()
+	if closing {
+		a.commandDropped.Add(1)
+		return
+	}
 	topic := m.Topic()
 	payload := m.Payload()
 	zap.L().Debug("jetlinks mqtt received",
@@ -557,6 +617,7 @@ func (a *app) onMessage(c mqtt.Client, m mqtt.Message) {
 	select {
 	case a.pendCh <- pending{cmd: cmd}:
 	default:
+		a.commandDropped.Add(1)
 		zap.L().Warn("pending channel full, dropping command")
 	}
 }
@@ -610,15 +671,16 @@ func decodeCommand(childDeviceID, action string, payload []byte) (core.NorthComm
 	return cmd, nil
 }
 
-// dispatch 处理下行指令：调用对应 Group 的 driver 后 publish reply。
-// 启动 goroutine 并发处理，避免单一设备的采集通道超时时拖慢全局下行控制（HOL 阻塞）。
+// dispatch 由固定数量的 worker 处理下行指令，避免单一设备的采集超时拖慢全部指令，
+// 同时防止每条消息都创建 goroutine 导致并发失控。
 func (a *app) dispatch(ctx context.Context) {
+	defer a.commandWG.Done()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case p := <-a.pendCh:
-			go a.handleCommand(ctx, p.cmd)
+			a.handleCommand(ctx, p.cmd)
 		}
 	}
 }
@@ -626,7 +688,7 @@ func (a *app) dispatch(ctx context.Context) {
 // handleCommand 通过 Runner 注入的执行器调用目标 Group 驱动并回复平台。
 func (a *app) handleCommand(ctx context.Context, cmd core.NorthCommand) {
 	if a.commandExecutor == nil {
-		a.publishReply(cmd, core.NorthCommandReply{
+		a.publishReply(ctx, cmd, core.NorthCommandReply{
 			ID:      cmd.ID,
 			Code:    503,
 			Message: "command executor unavailable",
@@ -637,10 +699,10 @@ func (a *app) handleCommand(ctx context.Context, cmd core.NorthCommand) {
 	if err != nil {
 		reply = core.NorthCommandReply{ID: cmd.ID, Code: 500, Message: err.Error()}
 	}
-	a.publishReply(cmd, reply)
+	a.publishReply(ctx, cmd, reply)
 }
 
-func (a *app) publishReply(cmd core.NorthCommand, reply core.NorthCommandReply) {
+func (a *app) publishReply(ctx context.Context, cmd core.NorthCommand, reply core.NorthCommandReply) {
 	topic := topicChildWriteReply(a.cfg.ProductID, a.cfg.DeviceID, cmd.DeviceID)
 	switch cmd.Type {
 	case "read-property":
@@ -648,6 +710,26 @@ func (a *app) publishReply(cmd core.NorthCommand, reply core.NorthCommandReply) 
 	case "invoke-function":
 		topic = topicChildInvokeReply(a.cfg.ProductID, a.cfg.DeviceID, cmd.DeviceID)
 	}
+	body := buildReplyBody(cmd, reply)
+	payload, err := json.Marshal(body)
+	if err != nil {
+		a.publishFailed.Add(1)
+		zap.L().Error("encode reply failed", zap.Error(err))
+		return
+	}
+	a.mu.RLock()
+	c := a.client
+	a.mu.RUnlock()
+	if c == nil {
+		return
+	}
+	if err := waitMQTTToken(ctx, c.Publish(topic, a.cfg.QoS, false, payload)); err != nil {
+		a.publishFailed.Add(1)
+		zap.L().Error("publish reply failed", zap.Error(err))
+	}
+}
+
+func buildReplyBody(cmd core.NorthCommand, reply core.NorthCommandReply) map[string]interface{} {
 	body := map[string]interface{}{
 		"messageId":  reply.ID,
 		"code":       reply.Code,
@@ -659,18 +741,13 @@ func (a *app) publishReply(cmd core.NorthCommand, reply core.NorthCommandReply) 
 	case "read-property", "write-property":
 		body["properties"] = reply.Payload
 	case "invoke-function":
-		body["output"] = reply.Payload
+		if output, exists := reply.Payload["output"]; exists {
+			body["output"] = output
+		} else {
+			body["output"] = reply.Payload
+		}
 	}
-	payload, _ := json.Marshal(body)
-	a.mu.RLock()
-	c := a.client
-	a.mu.RUnlock()
-	if c == nil {
-		return
-	}
-	if token := c.Publish(topic, 0, false, payload); token.Wait() && token.Error() != nil {
-		zap.L().Error("publish reply failed", zap.Error(token.Error()))
-	}
+	return body
 }
 
 // OnMessage 处理上行消息（属性上报）。
@@ -681,22 +758,28 @@ func (a *app) OnMessage(ctx context.Context, msg core.NorthMessage) error {
 	}
 	// 网关+子设备模式：用子设备 topic
 	topic := topicChildPropertiesReport(a.cfg.ProductID, a.cfg.DeviceID, msg.DeviceID)
-	payload, _ := json.Marshal(map[string]interface{}{
+	payload, err := json.Marshal(map[string]interface{}{
 		"messageId":  uuid.NewString(),
 		"properties": msg.Payload["properties"],
 		"changes":    msg.Payload["changes"],
 		"timestamp":  msg.Timestamp.UnixMilli(),
 	})
+	if err != nil {
+		a.publishFailed.Add(1)
+		return fmt.Errorf("jetlinks encode report: %w", err)
+	}
 	a.mu.RLock()
 	c := a.client
 	a.mu.RUnlock()
 	if c == nil || !c.IsConnected() {
-		// 采集链路不因北向离线失败；连接状态由 State() 对外暴露。
-		return nil
+		a.dropped.Add(1)
+		return fmt.Errorf("jetlinks: broker is not connected; report dropped")
 	}
-	if token := c.Publish(topic, 0, false, payload); token.Wait() && token.Error() != nil {
-		return fmt.Errorf("publish report: %w", token.Error())
+	if err := waitMQTTToken(ctx, c.Publish(topic, a.cfg.QoS, false, payload)); err != nil {
+		a.publishFailed.Add(1)
+		return fmt.Errorf("publish report: %w", err)
 	}
+	a.published.Add(1)
 	return nil
 }
 
@@ -709,12 +792,20 @@ func (a *app) OnCommand(ctx context.Context, cmd core.NorthCommand) (core.NorthC
 	if err != nil {
 		return core.NorthCommandReply{}, err
 	}
-	a.publishReply(cmd, reply)
+	a.publishReply(ctx, cmd, reply)
 	return reply, nil
 }
 
 // Close 停止 MQTT 客户端并释放自动重连资源。
 func (a *app) Close() error {
+	a.lifecycleMu.Lock()
+	a.closing = true
+	if a.cancel != nil {
+		a.cancel()
+	}
+	a.lifecycleMu.Unlock()
+	a.commandWG.Wait()
+	a.lifecycleWG.Wait()
 	a.mu.Lock()
 	client := a.client
 	a.client = nil
@@ -730,9 +821,35 @@ func (a *app) State() *core.NorthState {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	if a.client == nil {
-		return &core.NorthState{Connected: false, LastError: "client not initialized"}
+		return &core.NorthState{Connected: false, LastError: "client not initialized", Stats: a.stats()}
 	}
-	return &core.NorthState{Connected: a.client.IsConnected()}
+	state := &core.NorthState{Connected: a.client.IsConnected(), Stats: a.stats()}
+	if !state.Connected {
+		state.LastError = "broker is not connected"
+	}
+	return state
+}
+
+func (a *app) stats() map[string]int64 {
+	return map[string]int64{
+		"published":      a.published.Load(),
+		"publishFailed":  a.publishFailed.Load(),
+		"dropped":        a.dropped.Load(),
+		"commandDropped": a.commandDropped.Load(),
+	}
+}
+
+func waitMQTTToken(ctx context.Context, token mqtt.Token) error {
+	timer := time.NewTimer(mqttOperationTimeout)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return fmt.Errorf("mqtt operation timeout")
+	case <-token.Done():
+		return token.Error()
+	}
 }
 
 // ============ 主题工具函数（按官方协议 jetlinks-official-protocol V1.3.1）============
@@ -957,8 +1074,9 @@ func (a *app) reportGatewayProperties() {
 		return
 	}
 
-	if token := client.Publish(topic, 0, false, payload); token.Wait() && token.Error() != nil {
-		zap.L().Warn("jetlinks publish gateway properties failed", zap.Error(token.Error()))
+	if err := waitMQTTToken(a.ctx, client.Publish(topic, a.cfg.QoS, false, payload)); err != nil {
+		a.publishFailed.Add(1)
+		zap.L().Warn("jetlinks publish gateway properties failed", zap.Error(err))
 	} else {
 		zap.L().Debug("jetlinks publish gateway properties success", zap.Any("properties", properties))
 	}

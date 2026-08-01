@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -58,6 +59,15 @@ func (h *GroupHandler) Create(c *gin.Context) {
 	if g.ID == "" {
 		g.ID = uuid.NewString()
 	}
+	existing, err := h.store.GetGroup(c.Request.Context(), g.ID)
+	if err != nil {
+		errResp(c, http.StatusInternalServerError, err)
+		return
+	}
+	if existing != nil {
+		errResp(c, http.StatusConflict, &simpleErr{msg: "group id already exists"})
+		return
+	}
 	if g.IntervalMs == 0 {
 		g.IntervalMs = 1000
 	}
@@ -74,6 +84,16 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		errResp(c, http.StatusBadRequest, &simpleErr{msg: "connection not found"})
 		return
 	}
+	config, err := h.runner.DefaultGroupConfig(conn.Driver, g.Config)
+	if err != nil {
+		errResp(c, http.StatusBadRequest, err)
+		return
+	}
+	g.Config = config
+	if err := h.runner.ValidateGroupConfig(conn.Driver, g.Config); err != nil {
+		errResp(c, http.StatusBadRequest, err)
+		return
+	}
 	// 校验：若绑定了 JetLinks 网关北向时，必须填设备身份
 	isRequired, err := h.isJetLinksGatewayRequired(c.Request.Context(), g.NorthAppID)
 	if err != nil {
@@ -84,14 +104,14 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		errResp(c, http.StatusBadRequest, errMissingField("device.productId/device.deviceId (when JetLinks Gateway is bound)"))
 		return
 	}
-	g.MarshalConfig()
-	if err := h.store.DB().Create(&g).Error; err != nil {
+	if err := h.store.CreateGroup(c.Request.Context(), &g); err != nil {
 		errResp(c, http.StatusInternalServerError, err)
 		return
 	}
 	// 立即加载运行
 	if g.Enabled {
 		if err := h.runner.Reload(c.Request.Context(), g.ID); err != nil {
+			_ = h.store.DeleteGroup(c.Request.Context(), g.ID)
 			errResp(c, http.StatusInternalServerError, err)
 			return
 		}
@@ -103,6 +123,15 @@ func (h *GroupHandler) Create(c *gin.Context) {
 // Update 更新点组。
 func (h *GroupHandler) Update(c *gin.Context) {
 	id := c.Param("id")
+	existing, err := h.store.GetGroup(c.Request.Context(), id)
+	if err != nil {
+		errResp(c, http.StatusInternalServerError, err)
+		return
+	}
+	if existing == nil {
+		errResp(c, http.StatusNotFound, errNotFound)
+		return
+	}
 	var g core.Group
 	if err := c.ShouldBindJSON(&g); err != nil {
 		errResp(c, http.StatusBadRequest, err)
@@ -122,6 +151,16 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		errResp(c, http.StatusBadRequest, &simpleErr{msg: "connection not found"})
 		return
 	}
+	config, err := h.runner.DefaultGroupConfig(conn.Driver, g.Config)
+	if err != nil {
+		errResp(c, http.StatusBadRequest, err)
+		return
+	}
+	g.Config = config
+	if err := h.runner.ValidateGroupConfig(conn.Driver, g.Config); err != nil {
+		errResp(c, http.StatusBadRequest, err)
+		return
+	}
 	isRequired, err := h.isJetLinksGatewayRequired(c.Request.Context(), g.NorthAppID)
 	if err != nil {
 		errResp(c, http.StatusInternalServerError, err)
@@ -131,13 +170,19 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		errResp(c, http.StatusBadRequest, errMissingField("device.productId/device.deviceId (when JetLinks Gateway is bound)"))
 		return
 	}
-	g.MarshalConfig()
-	if err := h.store.DB().Save(&g).Error; err != nil {
+	if err := h.store.SaveGroup(c.Request.Context(), &g); err != nil {
 		errResp(c, http.StatusInternalServerError, err)
 		return
 	}
 	// 热重启
 	if err := h.runner.Reload(c.Request.Context(), id); err != nil {
+		rollbackErr := h.store.SaveGroup(c.Request.Context(), existing)
+		if rollbackErr == nil {
+			rollbackErr = h.runner.Reload(c.Request.Context(), id)
+		}
+		if rollbackErr != nil {
+			err = fmt.Errorf("apply group update: %w; rollback failed: %v", err, rollbackErr)
+		}
 		errResp(c, http.StatusInternalServerError, err)
 		return
 	}

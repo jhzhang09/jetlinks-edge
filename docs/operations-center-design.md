@@ -255,8 +255,8 @@ flowchart TD
     Gin --> Runner["core.Runner"]
     Runner --> DriverRegistry["DriverRegistry"]
     Runner --> NorthRegistry["NorthRegistry"]
-    DriverRegistry --> SouthDriver["SouthDriver 实例"]
-    NorthRegistry --> NorthHandler["NorthHandler 实例"]
+    DriverRegistry --> SouthDriver["DriverLifecycle 实例"]
+    NorthRegistry --> NorthHandler["NorthMessageHandler 实例"]
     Runner --> Values["LastValues 缓存"]
     SouthDriver --> Values
     Runner --> NorthHandler
@@ -293,28 +293,31 @@ flowchart TD
 | 维度 | 南向设备插件 | 北向应用插件 |
 |---|---|---|
 | 业务对象 | `Group` + `Tag` | `NorthApp` |
-| 接口 | `core.SouthDriver` | `core.NorthHandler` |
-| 工厂 | `core.DriverFactory` | `core.NorthAppFactory` |
+| 兼容接口 | `core.SouthDriver` | `core.NorthHandler` |
+| 最小接口 | `core.DriverLifecycle` | `core.NorthMessageHandler` |
+| 兼容工厂 | `core.DriverFactory` | `core.NorthAppFactory` |
 | 注册表 | `core.DriverRegistry` | `core.NorthRegistry` |
 | 配置 Schema | `ConnectionSchema`、`TagSchema` | `ConfigSchema` |
-| 实例粒度 | 每个 enabled Group 一个 driver 实例 | 每个 enabled NorthApp 一个 handler 实例 |
-| 运行时归属 | `groupRuntime.driver` | `northAppRuntime.handler` |
-| 热加载入口 | `Runner.Reload(groupID)` | `Runner.ReloadNorthApp(appID)` |
+| 实例粒度 | 每个 enabled Connection 一个 driver 实例，可被多个 Group 共享 | 每个 enabled NorthApp 一个 handler 实例 |
+| 运行时归属 | `connectionRuntime.driver` | `northAppRuntime.handler` |
+| 热加载入口 | `Runner.ReloadConnection(connectionID)` / `Runner.Reload(groupID)` | `Runner.ReloadNorthApp(appID)` |
 | 前端配置页 | `GroupsView`、`GroupDetailView` | `NorthboundView` |
 
 ### 4.3.2 南向插件接口
 
-南向插件负责连接工业现场、读取点位、写入点位和返回连接状态。
+南向插件的最小契约只负责连接生命周期和状态；读取、写入、浏览与功能调用按能力组合。
 
 ```go
-type SouthDriver interface {
+type DriverLifecycle interface {
     Name() string
     Connect(ctx context.Context) error
-    ReadTags(ctx context.Context, tags []Tag) ([]TagValue, error)
-    WriteTag(ctx context.Context, tag Tag, value interface{}) error
     Disconnect() error
     Status() DriverStatus
 }
+
+type TagReader interface { ReadTags(ctx context.Context, tags []Tag) ([]TagValue, error) }
+type TagWriter interface { WriteTag(ctx context.Context, tag Tag, value interface{}) error }
+type FunctionInvoker interface { InvokeFunction(ctx context.Context, functionID string, inputs interface{}) (interface{}, error) }
 ```
 
 可选能力：
@@ -325,7 +328,7 @@ type NodeBrowser interface {
 }
 ```
 
-`NodeBrowser` 当前用于 OPC UA 节点浏览。新增南向协议如果支持树形浏览、扫描点位或自动发现，优先用可选接口扩展，不要把扫描逻辑写进通用 `SouthDriver`。
+`SouthDriver` 保留原来的生命周期、读写组合以兼容现有插件；新插件可通过 `RegisterLifecycleExtension` 注册最小接口。`NodeBrowser` 当前用于 OPC UA 节点浏览。
 
 南向插件必须遵守：
 
@@ -337,13 +340,16 @@ type NodeBrowser interface {
 
 ### 4.3.3 北向插件接口
 
-北向插件负责把采集消息上送到平台，并接收平台下行命令。
+北向插件的最小契约只负责上行消息；需要下行命令的旧插件继续实现兼容接口。
 
 ```go
-type NorthHandler interface {
-    OnMessage(ctx context.Context, msg DeviceMessage) error
+type NorthMessageHandler interface {
+    OnMessage(ctx context.Context, msg NorthMessage) error
+}
+type NorthCommandHandler interface {
     OnCommand(ctx context.Context, cmd NorthCommand) (NorthCommandReply, error)
 }
+type NorthHandler interface { NorthMessageHandler; NorthCommandHandler }
 ```
 
 北向插件实例化配置：
@@ -436,22 +442,26 @@ sequenceDiagram
     participant API as Web API
     participant Store as Store
     participant Runner as Runner
-    participant Driver as SouthDriver
-    participant North as NorthHandler
+    participant Driver as DriverLifecycle
+    participant North as NorthMessageHandler
 
-    API->>Store: Save Group / Save NorthApp
-    API->>Runner: Reload(groupID) or ReloadNorthApp(appID)
+    API->>Store: Save Connection / Group / NorthApp
+    API->>Runner: ReloadConnection / Reload / ReloadNorthApp
     alt Reload Group
-        Runner->>Driver: old.Disconnect()
+        Runner->>Runner: cancel and wait old Group workers
         Runner->>Store: GetGroup + ListTags
-        Runner->>Driver: registry.Create()
-        Runner->>Driver: Connect()
+        Runner->>Runner: reuse shared Connection runtime
         Runner->>North: RegisterGroup(group) if supported
+    else Reload Connection
+        Runner->>Store: GetConnection
+        Runner->>Driver: create and connect candidate
+        Runner->>Runner: swap Group connection references
+        Runner->>Driver: disconnect old instance
     else Reload NorthApp
-        Runner->>North: old.DeregisterGroup(...)
-        Runner->>North: close old instance
         Runner->>Store: GetNorthApp
-        Runner->>North: registry.Create()
+        Runner->>North: create candidate instance
+        Runner->>Runner: swap Group north references
+        Runner->>North: deregister and close old instance
         Runner->>North: RegisterGroup(...) for referenced groups
     end
 ```
@@ -460,9 +470,9 @@ sequenceDiagram
 
 1. Web handler 的 request context 不能传给长期运行的采集 goroutine。
 2. Runner 必须使用内部 background context 派生运行时任务。
-3. Reload 时先停止旧实例，再替换运行时引用，避免同一 Group 双采集。
+3. Connection/NorthApp 热更新先建立候选实例；候选不可用时保留健康旧实例，成功后再切换引用并回收旧实例。
 4. 北向应用重建时，应恢复引用它的 Group 注册关系。
-5. 删除 NorthApp 时必须让 Group 的 `northAppId` 失效或为空，避免悬挂引用。
+5. 删除 NorthApp 时必须同步清理点组北向关系表和兼容字段，避免悬挂引用。
 
 ### 4.3.7 状态与观测
 
@@ -470,7 +480,7 @@ sequenceDiagram
 
 | 状态来源 | 进入字段 |
 |---|---|
-| `SouthDriver.Status()` | `groups[].running/connected/lastError/stats` |
+| `DriverLifecycle.Status()` | `groups[].running/connected/lastError/stats` |
 | `Runner.LastValues(groupID)` | `recentValues`、tag 告警 |
 | `Runner.ListNorthAppStatus()` | `northApps[]`、north 告警 |
 | `DriverRegistry.Descriptors()` | `driverPlugins[]` |
@@ -516,9 +526,10 @@ sequenceDiagram
     Runner->>Store: Load enabled NorthApps
     Runner->>North: Create each NorthHandler
     Runner->>Runner: 保存 northApps 实例池
+    Runner->>Store: Load enabled Connections
+    Runner->>Driver: Create driver per Connection
     Runner->>Store: Load enabled Groups
-    Runner->>Driver: Create SouthDriver per Group
-    Runner->>Runner: 启动采集调度
+    Runner->>Runner: Group 引用共享 Connection/NorthApp 并启动采集调度
     Runner->>Runner: 缓存 LastValues / DriverStatus
 ```
 
@@ -527,7 +538,7 @@ sequenceDiagram
 关键规则：
 
 1. NorthApp 配置变更时重建该 NorthApp 实例。
-2. Group 配置变更时重建对应 Driver。
+2. Connection 配置变更时安全替换对应 Driver；Group 配置变更只重建该 Group 的调度和订阅。
 3. 删除 NorthApp 时必须解除 Group 引用或保证运行态不再引用已删除实例。
 4. Group 不绑定 NorthApp 时只采集不上送。
 
@@ -637,8 +648,8 @@ Schema 字段变更时必须同时检查 `core.ValidateConfig`、`web/src/api/in
 
 ### 6.1 新增南向插件
 
-1. 在 `internal/driver/<plugin>` 下实现 `core.SouthDriver`。
-2. 在启动注册处调用 `DriverRegistry.RegisterExtension`。
+1. 轮询型兼容插件实现 `core.SouthDriver`；能力型插件实现 `core.DriverLifecycle` 并按需组合可选接口。
+2. 兼容插件调用 `DriverRegistry.RegisterExtension`，能力型插件调用 `RegisterLifecycleExtension`。
 3. 补 `ConnectionSchema` 和 `TagSchema`。
 4. 后端测试覆盖配置校验和关键读写路径。
 5. 前端无需为插件新建表单页面，确认 `DynamicConfigForm` 能渲染新增字段类型即可。
@@ -646,8 +657,8 @@ Schema 字段变更时必须同时检查 `core.ValidateConfig`、`web/src/api/in
 
 ### 6.2 新增北向插件
 
-1. 在 `internal/northbound/<plugin>` 下实现 `core.NorthHandler`。
-2. 在启动注册处调用 `NorthRegistry.RegisterExtension`。
+1. 双向兼容插件实现 `core.NorthHandler`；仅上行插件实现 `core.NorthMessageHandler`。
+2. 双向插件调用 `NorthRegistry.RegisterExtension`，仅上行插件调用 `RegisterMessageExtension`。
 3. 补 `ConfigSchema`。
 4. 确认 `ListNorthAppStatus` 能返回运行与连接状态。
 5. 在 `/operations` 中不需要特殊判断，除非新增插件有独立健康维度。

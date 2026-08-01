@@ -4,6 +4,7 @@
 package mqtt
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -22,6 +23,7 @@ func TestParseAppConfig(t *testing.T) {
 		"keepAlive":    float64(45),
 		"uploadTopic":  "/test/upload",
 		"writeTopic":   "/test/write",
+		"qos":          float64(1),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -29,8 +31,19 @@ func TestParseAppConfig(t *testing.T) {
 
 	if cfg.Broker != "tcp://127.0.0.1:1883" || cfg.ClientID != "test-client" ||
 		cfg.Username != "user" || cfg.Password != "pass" || cfg.CleanSession ||
-		cfg.KeepAlive != 45 || cfg.UploadTopic != "/test/upload" || cfg.WriteTopic != "/test/write" {
+		cfg.KeepAlive != 45 || cfg.UploadTopic != "/test/upload" || cfg.WriteTopic != "/test/write" || cfg.QoS != 1 {
 		t.Fatalf("unexpected parsed config: %+v", cfg)
+	}
+	if _, err := parseAppConfig(map[string]interface{}{"broker": "tcp://127.0.0.1:1883", "qos": 2}); err == nil {
+		t.Fatal("expected invalid qos to be rejected")
+	}
+}
+
+func TestOnMessageReportsOfflineDrop(t *testing.T) {
+	a := &app{cfg: AppConfig{UploadTopic: "/edge/upload"}}
+	err := a.OnMessage(context.Background(), core.NorthMessage{Timestamp: time.Now(), Payload: map[string]interface{}{}})
+	if err == nil || a.stats()["dropped"] != 1 {
+		t.Fatalf("expected observable offline drop, err=%v stats=%v", err, a.stats())
 	}
 }
 

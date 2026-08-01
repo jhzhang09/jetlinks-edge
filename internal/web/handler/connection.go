@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -56,6 +57,15 @@ func (h *ConnectionHandler) Create(c *gin.Context) {
 	if conn.ID == "" {
 		conn.ID = uuid.NewString()
 	}
+	existing, err := h.store.GetConnection(c.Request.Context(), conn.ID)
+	if err != nil {
+		errResp(c, http.StatusInternalServerError, err)
+		return
+	}
+	if existing != nil {
+		errResp(c, http.StatusConflict, &simpleErr{msg: "connection id already exists"})
+		return
+	}
 	if conn.Driver == "" {
 		errResp(c, http.StatusBadRequest, errMissingField("driver"))
 		return
@@ -73,8 +83,7 @@ func (h *ConnectionHandler) Create(c *gin.Context) {
 		return
 	}
 
-	conn.MarshalConfig()
-	if err := h.store.SaveConnection(c.Request.Context(), &conn); err != nil {
+	if err := h.store.CreateConnection(c.Request.Context(), &conn); err != nil {
 		errResp(c, http.StatusInternalServerError, err)
 		return
 	}
@@ -82,6 +91,7 @@ func (h *ConnectionHandler) Create(c *gin.Context) {
 	// 立即热加载运行
 	if conn.Enabled {
 		if err := h.runner.ReloadConnection(c.Request.Context(), conn.ID); err != nil {
+			_ = h.store.DeleteConnection(c.Request.Context(), conn.ID)
 			errResp(c, http.StatusInternalServerError, err)
 			return
 		}
@@ -92,12 +102,22 @@ func (h *ConnectionHandler) Create(c *gin.Context) {
 // Update 更新通道。
 func (h *ConnectionHandler) Update(c *gin.Context) {
 	id := c.Param("id")
+	existing, err := h.store.GetConnection(c.Request.Context(), id)
+	if err != nil {
+		errResp(c, http.StatusInternalServerError, err)
+		return
+	}
+	if existing == nil {
+		errResp(c, http.StatusNotFound, errNotFound)
+		return
+	}
 	var conn core.Connection
 	if err := c.ShouldBindJSON(&conn); err != nil {
 		errResp(c, http.StatusBadRequest, err)
 		return
 	}
 	conn.ID = id
+	conn.CreatedAt = existing.CreatedAt
 	if conn.Driver == "" {
 		errResp(c, http.StatusBadRequest, errMissingField("driver"))
 		return
@@ -115,7 +135,6 @@ func (h *ConnectionHandler) Update(c *gin.Context) {
 		return
 	}
 
-	conn.MarshalConfig()
 	if err := h.store.SaveConnection(c.Request.Context(), &conn); err != nil {
 		errResp(c, http.StatusInternalServerError, err)
 		return
@@ -123,6 +142,9 @@ func (h *ConnectionHandler) Update(c *gin.Context) {
 
 	// 热重启物理连接，并重新唤起该连接下所有已启用的 Group
 	if err := h.runner.ReloadConnection(c.Request.Context(), id); err != nil {
+		if rollbackErr := h.store.SaveConnection(c.Request.Context(), existing); rollbackErr != nil {
+			err = fmt.Errorf("apply connection update: %w; rollback failed: %v", err, rollbackErr)
+		}
 		errResp(c, http.StatusInternalServerError, err)
 		return
 	}

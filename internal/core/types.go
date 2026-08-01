@@ -15,6 +15,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -68,29 +69,38 @@ type Tag struct {
 }
 
 // MarshalConfig 把 Tag.Config 序列化为 JSON，并同步当前 Modbus 兼容字段。
-func (t *Tag) MarshalConfig() {
+func (t *Tag) MarshalConfig() error {
 	t.SyncLegacyToConfig()
 	t.ApplyConfig()
 	if t.Config == nil {
 		t.ConfigJSON = "{}"
-		return
+		return nil
 	}
-	b, _ := json.Marshal(t.Config)
+	b, err := json.Marshal(t.Config)
+	if err != nil {
+		return fmt.Errorf("marshal tag config: %w", err)
+	}
 	t.ConfigJSON = string(b)
+	return nil
 }
 
 // UnmarshalConfig 从 ConfigJSON 反序列化，并用现有字段补齐旧数据。
-func (t *Tag) UnmarshalConfig() {
+func (t *Tag) UnmarshalConfig() error {
+	var decodeErr error
 	if t.ConfigJSON == "" {
 		t.Config = map[string]interface{}{}
 	} else {
-		_ = json.Unmarshal([]byte(t.ConfigJSON), &t.Config)
+		decodeErr = json.Unmarshal([]byte(t.ConfigJSON), &t.Config)
 	}
 	if t.Config == nil {
 		t.Config = map[string]interface{}{}
 	}
 	t.SyncLegacyToConfig()
 	t.ApplyConfig()
+	if decodeErr != nil {
+		return fmt.Errorf("unmarshal tag config: %w", decodeErr)
+	}
+	return nil
 }
 
 // SyncLegacyToConfig 使用旧版点位字段补齐动态配置，兼容旧 API 请求和已有数据。
@@ -157,7 +167,7 @@ type Group struct {
 	ConfigJSON   string                 `json:"-" gorm:"column:config;type:text"`
 	Enabled      bool                   `json:"enabled" gorm:"default:true"`
 	// 与北向应用的关联：可空（纯本地采集）、可改（切换上送目标不影响采集）
-	NorthAppID string `json:"northAppId" gorm:"type:varchar(64);index"`
+	NorthAppID string `json:"northAppId" gorm:"type:text"`
 	// 设备身份：每台设备一份，定义本 Group 对应 JetLinks 平台哪个 productId/deviceId
 	Device DeviceConfig `json:"device" gorm:"embedded;embeddedPrefix:device_"`
 	Tags   []Tag        `json:"tags" gorm:"foreignKey:GroupID;references:ID"`
@@ -204,41 +214,57 @@ type DeviceConfig struct {
 }
 
 // MarshalConfig 把 Config 序列化为 JSON 字符串。
-func (g *Group) MarshalConfig() {
+func (g *Group) MarshalConfig() error {
 	if g.Config == nil {
 		g.ConfigJSON = "{}"
-		return
+		return nil
 	}
-	b, _ := json.Marshal(g.Config)
+	b, err := json.Marshal(g.Config)
+	if err != nil {
+		return fmt.Errorf("marshal group config: %w", err)
+	}
 	g.ConfigJSON = string(b)
+	return nil
 }
 
 // UnmarshalConfig 从 ConfigJSON 反序列化。
-func (g *Group) UnmarshalConfig() {
+func (g *Group) UnmarshalConfig() error {
 	if g.ConfigJSON == "" {
 		g.Config = map[string]interface{}{}
-		return
+		return nil
 	}
-	_ = json.Unmarshal([]byte(g.ConfigJSON), &g.Config)
+	if err := json.Unmarshal([]byte(g.ConfigJSON), &g.Config); err != nil {
+		g.Config = map[string]interface{}{}
+		return fmt.Errorf("unmarshal group config: %w", err)
+	}
+	return nil
 }
 
 // MarshalConfig 把 NorthApp.Config 序列化为 JSON 字符串。
-func (n *NorthApp) MarshalConfig() {
+func (n *NorthApp) MarshalConfig() error {
 	if n.Config == nil {
 		n.ConfigJSON = "{}"
-		return
+		return nil
 	}
-	b, _ := json.Marshal(n.Config)
+	b, err := json.Marshal(n.Config)
+	if err != nil {
+		return fmt.Errorf("marshal north app config: %w", err)
+	}
 	n.ConfigJSON = string(b)
+	return nil
 }
 
 // UnmarshalConfig 从 ConfigJSON 反序列化。
-func (n *NorthApp) UnmarshalConfig() {
+func (n *NorthApp) UnmarshalConfig() error {
 	if n.ConfigJSON == "" {
 		n.Config = map[string]interface{}{}
-		return
+		return nil
 	}
-	_ = json.Unmarshal([]byte(n.ConfigJSON), &n.Config)
+	if err := json.Unmarshal([]byte(n.ConfigJSON), &n.Config); err != nil {
+		n.Config = map[string]interface{}{}
+		return fmt.Errorf("unmarshal north app config: %w", err)
+	}
+	return nil
 }
 
 // ValueChange 数据变化回调。
@@ -263,14 +289,25 @@ type NorthMessage struct {
 	Payload   map[string]interface{} `json:"payload"`
 }
 
-// NorthHandler 北向消息处理接口。
-type NorthHandler interface {
+// NorthMessageHandler 是北向插件必须实现的最小上行消息接口。
+type NorthMessageHandler interface {
 	// OnMessage 处理从边缘到平台的消息（属性上报、事件、日志等）。
 	// msg 中带 ProductID/DeviceID，handler 自行根据这些字段路由 topic。
 	OnMessage(ctx context.Context, msg NorthMessage) error
-	// OnCommand 接收从平台到边缘的指令（读属性/写属性/调用功能），返回响应。
-	// cmd 中带 ProductID/DeviceID，handler 根据这些字段定位目标 Group 调用驱动。
+}
+
+// NorthCommandHandler 是支持主动处理下行指令的北向插件可选能力。
+// 大部分 MQTT 插件通过 NorthAppConfig.CommandExecutor 回调 Runner，
+// 仅上行传输的插件无需实现此接口。
+type NorthCommandHandler interface {
 	OnCommand(ctx context.Context, cmd NorthCommand) (NorthCommandReply, error)
+}
+
+// NorthHandler 是旧版双向北向插件的兼容接口。
+// 已有插件和 NorthRegistry.Create 的调用约定保持不变；仅上行插件可使用 NorthMessageHandler。
+type NorthHandler interface {
+	NorthMessageHandler
+	NorthCommandHandler
 }
 
 // NorthCommandExecutor 执行平台下发的南向指令。
@@ -283,23 +320,33 @@ type NorthLifecycle interface {
 
 // NorthState 北向应用实时状态。
 type NorthState struct {
-	Connected bool   `json:"connected"`
-	LastError string `json:"lastError"`
+	Connected bool             `json:"connected"`
+	LastError string           `json:"lastError"`
+	Stats     map[string]int64 `json:"stats,omitempty"`
 }
 
-// NorthStateReporter 可选接口：NorthHandler 可实现，用于探活。
+// NorthStateReporter 可选接口：北向消息处理器可实现，用于探活。
 type NorthStateReporter interface {
 	State() *NorthState
 }
 
 // NorthCommand 北向指令。
 type NorthCommand struct {
-	ID        string                 `json:"id"`
-	GroupID   string                 `json:"groupId"`
-	ProductID string                 `json:"productId"`
-	DeviceID  string                 `json:"deviceId"`
-	Type      string                 `json:"type"` // read-property / write-property / invoke-function
-	Payload   map[string]interface{} `json:"payload"`
+	ID         string                 `json:"id"`
+	NorthAppID string                 `json:"northAppId,omitempty"`
+	GroupID    string                 `json:"groupId"`
+	ProductID  string                 `json:"productId"`
+	DeviceID   string                 `json:"deviceId"`
+	Type       string                 `json:"type"` // read-property / write-property / invoke-function
+	Payload    map[string]interface{} `json:"payload"`
+}
+
+// GroupNorthAppBinding 是点组与北向应用的持久化多对多关系。
+// NorthAppID 旧字段仍保留作为 API 兼容层，新关系表才是多北向绑定的结构化存储。
+type GroupNorthAppBinding struct {
+	GroupID    string    `json:"groupId" gorm:"primaryKey;type:varchar(64)"`
+	NorthAppID string    `json:"northAppId" gorm:"primaryKey;type:varchar(64);index"`
+	CreatedAt  time.Time `json:"createdAt"`
 }
 
 // NorthCommandReply 北向指令响应。

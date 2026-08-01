@@ -25,6 +25,7 @@ type Config struct {
 // WebConfig 管理界面相关配置。
 type WebConfig struct {
 	Addr            string        `mapstructure:"addr"`             // 监听地址，例如 0.0.0.0:7001
+	Production      bool          `mapstructure:"production"`       // 生产模式下拒绝默认凭据
 	JWTSecret       string        `mapstructure:"jwt_secret"`       // JWT 签名密钥
 	TokenTTL        time.Duration `mapstructure:"token_ttl"`        // Token 有效期
 	DefaultUser     string        `mapstructure:"default_user"`     // 首次启动创建的默认账号
@@ -60,6 +61,7 @@ func Load(path string) (*Config, error) {
 
 	// 默认值
 	v.SetDefault("web.addr", "0.0.0.0:7001")
+	v.SetDefault("web.production", false)
 	v.SetDefault("web.jwt_secret", "jetlinks-edge-default-secret-change-me")
 	v.SetDefault("web.token_ttl", "24h")
 	v.SetDefault("web.default_user", "admin")
@@ -114,6 +116,10 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("web.addr is required")
 	case c.Web.JWTSecret == "":
 		return fmt.Errorf("web.jwt_secret is required")
+	case c.Web.Production && c.Web.JWTSecret == "jetlinks-edge-default-secret-change-me":
+		return fmt.Errorf("web.jwt_secret must be changed in production mode")
+	case c.Web.Production && c.Web.DefaultPassword == "admin123":
+		return fmt.Errorf("web.default_password must be changed in production mode")
 	case c.Web.TokenTTL <= 0:
 		return fmt.Errorf("web.token_ttl must be greater than zero")
 	case c.Storage.DSN == "":

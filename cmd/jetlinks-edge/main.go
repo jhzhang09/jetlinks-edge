@@ -1,8 +1,8 @@
 // Package main 是 JetLinks Edge 边缘网关的入口程序。
 //
 // 边缘网关主要职责：
-//  1. 通过南向驱动（南向插件）从现场设备采集数据（当前实现：Modbus TCP）
-//  2. 通过北向上送（北向应用）把数据推送到 JetLinks 物联网平台
+//  1. 通过南向驱动（南向插件）从现场设备采集数据（Modbus TCP / OPC UA）
+//  2. 通过北向上送（北向应用）把数据推送到 JetLinks 或通用 MQTT Broker
 //  3. 接收来自平台的控制指令并下发到南向设备
 //  4. 提供 Web 管理界面供用户配置点组、点位、连接、查看实时数据
 //
@@ -96,12 +96,12 @@ func main() {
 
 	// 4. 构建核心调度器
 	driverRegistry := core.NewDriverRegistry()
-	// 注册南向驱动 - 当前只支持 Modbus TCP，后续可注册 OPC-UA、Siemens S7 等
+	// 注册内置南向驱动，后续插件继续通过注册表扩展。
 	modbus.Register(driverRegistry)
 	opcua.Register(driverRegistry)
 
 	northRegistry := core.NewNorthRegistry()
-	// 注册北向应用 - 默认上送到 JetLinks 平台
+	// 注册内置北向应用。
 	jetlinksmqtt.Register(northRegistry)
 	mqtt.Register(northRegistry)
 

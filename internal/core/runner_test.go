@@ -24,12 +24,24 @@ func TestUpdateCachedValueDetectsChangesBeforeOverwrite(t *testing.T) {
 	if !runner.updateCachedValue("group-1", TagValue{TagID: "tag-1", Value: 2}) {
 		t.Fatal("new value must be treated as changed")
 	}
+	if !runner.updateCachedValue("group-1", TagValue{TagID: "tag-1", Value: 2, Quality: QualityBad}) {
+		t.Fatal("quality change must be treated as changed")
+	}
 }
 
 type lifecycleNorth struct {
 	registered   int
 	deregistered int
 	closed       int
+}
+
+type statefulNorth struct {
+	lifecycleNorth
+	connected bool
+}
+
+func (n *statefulNorth) State() *NorthState {
+	return &NorthState{Connected: n.connected}
 }
 
 func (n *lifecycleNorth) OnMessage(context.Context, NorthMessage) error {
@@ -86,12 +98,120 @@ func TestStartNorthAppReplacesLifecycleAndRebindsGroups(t *testing.T) {
 	}
 }
 
+func TestStartNorthAppKeepsConnectedInstanceWhenReplacementIsOffline(t *testing.T) {
+	registry := NewNorthRegistry()
+	instances := []*statefulNorth{{connected: true}, {connected: false}}
+	index := 0
+	registry.Register("test", func(context.Context, string, NorthAppConfig) (NorthHandler, error) {
+		instance := instances[index]
+		index++
+		return instance, nil
+	})
+	runner := NewRunner(NewDriverRegistry(), registry, nil)
+	app := &NorthApp{ID: "north-1", Type: "test", Enabled: true}
+	if err := runner.startNorthApp(context.Background(), app); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.startNorthApp(context.Background(), app); err == nil {
+		t.Fatal("expected disconnected replacement to be rejected")
+	}
+	if runner.northApps[app.ID].handler != instances[0] {
+		t.Fatal("connected north app was replaced")
+	}
+	if instances[0].closed != 0 || instances[1].closed != 1 {
+		t.Fatalf("unexpected close counts: old=%d replacement=%d", instances[0].closed, instances[1].closed)
+	}
+}
+
 type commandDriver struct {
 	readCount  int
 	writeCount int
 	writeValue interface{}
 	readValue  TagValue
 	status     DriverStatus
+}
+
+type replacementDriver struct {
+	commandDriver
+	connectErr   error
+	disconnected bool
+}
+
+type functionDriver struct {
+	commandDriver
+	functionID string
+	inputs     interface{}
+}
+
+func (d *functionDriver) InvokeFunction(_ context.Context, functionID string, inputs interface{}) (interface{}, error) {
+	d.functionID = functionID
+	d.inputs = inputs
+	return "done", nil
+}
+
+func (d *replacementDriver) Connect(context.Context) error {
+	return d.connectErr
+}
+
+func (d *replacementDriver) Disconnect() error {
+	d.disconnected = true
+	return nil
+}
+
+func TestStartConnectionKeepsHealthyInstanceWhenReplacementFails(t *testing.T) {
+	registry := NewDriverRegistry()
+	oldDriver := &replacementDriver{commandDriver: commandDriver{status: DriverStatus{Connected: true}}}
+	newDriver := &replacementDriver{connectErr: errors.New("invalid endpoint")}
+	instances := []*replacementDriver{oldDriver, newDriver}
+	index := 0
+	registry.Register("test", func(context.Context, string, DriverConfig) (SouthDriver, error) {
+		driver := instances[index]
+		index++
+		return driver, nil
+	})
+	runner := NewRunner(registry, NewNorthRegistry(), nil)
+	connection := &Connection{ID: "conn-1", Driver: "test"}
+	if err := runner.startConnection(context.Background(), connection); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.startConnection(context.Background(), connection); err == nil {
+		t.Fatal("expected failed replacement to be rejected")
+	}
+	if runner.connections[connection.ID].driver != oldDriver {
+		t.Fatal("healthy connection was replaced")
+	}
+	if oldDriver.disconnected || !newDriver.disconnected {
+		t.Fatalf("unexpected disconnect state: old=%v replacement=%v", oldDriver.disconnected, newDriver.disconnected)
+	}
+}
+
+func TestRunnerStopWaitsForGroupWorkersBeforeDisconnect(t *testing.T) {
+	driver := &replacementDriver{}
+	workerDone := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	group := &groupRuntime{
+		group:  &Group{ID: "group-1"},
+		cancel: cancel,
+	}
+	group.wg.Add(1)
+	go func() {
+		defer group.wg.Done()
+		<-ctx.Done()
+		time.Sleep(10 * time.Millisecond)
+		close(workerDone)
+	}()
+	runner := NewRunner(NewDriverRegistry(), NewNorthRegistry(), nil)
+	runner.groups[group.group.ID] = group
+	runner.connections["conn-1"] = &connectionRuntime{driver: driver}
+	runner.Stop()
+	select {
+	case <-workerDone:
+	default:
+		t.Fatal("group worker was not drained")
+	}
+	if !driver.disconnected {
+		t.Fatal("connection was not closed after workers drained")
+	}
 }
 
 func (d *commandDriver) Name() string { return "test" }
@@ -206,6 +326,70 @@ func TestExecuteNorthCommandReadsAndWritesTags(t *testing.T) {
 	}
 }
 
+func TestExecuteNorthCommandEnforcesNorthAppBinding(t *testing.T) {
+	driver := &commandDriver{}
+	group := &Group{
+		ID:         "group-1",
+		NorthAppID: "north-1",
+		Device:     DeviceConfig{ProductID: "product-1", DeviceID: "device-1"},
+		Tags:       []Tag{{ID: "write-tag", Name: "setpoint", Access: AccessRW}},
+	}
+	runner := NewRunner(NewDriverRegistry(), NewNorthRegistry(), nil)
+	runner.groups[group.ID] = &groupRuntime{
+		group:  group,
+		connRt: &connectionRuntime{conn: &Connection{ID: "conn-1"}, driver: driver},
+	}
+
+	reply, err := runner.executeNorthCommand(context.Background(), NorthCommand{
+		ID:         "write-1",
+		NorthAppID: "north-2",
+		GroupID:    group.ID,
+		Type:       "write-property",
+		Payload:    map[string]interface{}{"properties": map[string]interface{}{"setpoint": 55}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply.Code != 403 || driver.writeCount != 0 {
+		t.Fatalf("unexpected unauthorized command result: reply=%+v writes=%d", reply, driver.writeCount)
+	}
+}
+
+func TestExecuteNorthCommandInvokesOptionalDriverFunction(t *testing.T) {
+	driver := &functionDriver{}
+	group := &Group{ID: "group-1", NorthAppID: "north-1"}
+	runner := NewRunner(NewDriverRegistry(), NewNorthRegistry(), nil)
+	runner.groups[group.ID] = &groupRuntime{
+		group:  group,
+		connRt: &connectionRuntime{conn: &Connection{ID: "conn-1"}, driver: driver},
+	}
+	reply, err := runner.executeNorthCommand(context.Background(), NorthCommand{
+		ID:         "invoke-1",
+		NorthAppID: "north-1",
+		GroupID:    group.ID,
+		Type:       "invoke-function",
+		Payload:    map[string]interface{}{"functionId": "reset", "inputs": []interface{}{1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply.Code != 0 || reply.Payload["output"] != "done" || driver.functionID != "reset" {
+		t.Fatalf("unexpected invoke result: reply=%+v function=%q inputs=%#v", reply, driver.functionID, driver.inputs)
+	}
+}
+
+func TestMergeGroupConfigDoesNotMutateSource(t *testing.T) {
+	tags := []Tag{{ID: "tag-1", Config: map[string]interface{}{"address": "40001"}}}
+	merged := mergeGroupConfig(tags, map[string]interface{}{"unitId": 1})
+	merged[0].Config["address"] = "40002"
+	if tags[0].Config["address"] != "40001" {
+		t.Fatalf("source tag config was mutated: %#v", tags[0].Config)
+	}
+	if merged[0].Config["unitId"] != 1 {
+		t.Fatalf("group config not merged: %#v", merged[0].Config)
+	}
+}
+
 func TestExecuteNorthCommandRejectsBadQualityRead(t *testing.T) {
 	driver := &commandDriver{readValue: TagValue{Quality: QualityBad, Error: "device offline"}}
 	group := &Group{
@@ -257,7 +441,7 @@ func TestCollectOnceSkipsNorthReportWhenNoGoodValues(t *testing.T) {
 	runner.collectOnce(context.Background(), &groupRuntime{
 		group:  group,
 		connRt: &connectionRuntime{conn: &Connection{ID: "conn-1"}, driver: driver},
-		norths: []NorthHandler{north},
+		norths: []NorthMessageHandler{north},
 	})
 
 	if len(north.snapshot()) != 0 {
@@ -302,7 +486,7 @@ func TestCollectOnceReportsOnlyGoodQualityValues(t *testing.T) {
 	runner.collectOnce(context.Background(), &groupRuntime{
 		group:  group,
 		connRt: &connectionRuntime{conn: &Connection{ID: "conn-1"}, driver: driver},
-		norths: []NorthHandler{north},
+		norths: []NorthMessageHandler{north},
 	})
 
 	// 等待一小会儿确保协程消费完毕
@@ -415,8 +599,8 @@ func TestEventBusPublishSubscribe(t *testing.T) {
 	// 不用 defer unsub2，后面测试取消订阅
 
 	ev := Event{
-		Topic: "south/conn-1/group-1/values",
-		Type:  "values",
+		Topic:   "south/conn-1/group-1/values",
+		Type:    "values",
 		Payload: "payload-data",
 	}
 	eb.Publish(ev.Topic, ev)
@@ -448,6 +632,16 @@ func TestEventBusPublishSubscribe(t *testing.T) {
 		t.Error("ch2 received event after unsubscribe")
 	default:
 		// 期望没有收到
+	}
+}
+
+func TestEventBusCountsDroppedEvents(t *testing.T) {
+	eb := NewEventBus()
+	_, unsubscribe := eb.Subscribe("events", 0)
+	defer unsubscribe()
+	eb.Publish("events", Event{Topic: "events"})
+	if dropped := eb.Dropped(); dropped != 1 {
+		t.Fatalf("dropped events = %d, want 1", dropped)
 	}
 }
 
@@ -525,7 +719,7 @@ func TestRunnerIntegratesEventBus(t *testing.T) {
 	zap.ReplaceGlobals(logger)
 
 	runner := NewRunner(drivers, north, store)
-	
+
 	// 通过总线额外订阅，测试多订阅者路由能力
 	busCh, busUnsub := runner.EventBus().Subscribe("south/connection/conn-1/group/group-1/values", 10)
 	defer busUnsub()
@@ -656,4 +850,3 @@ func (m *memStore) DeleteConnection(ctx context.Context, id string) error {
 	delete(m.connections, id)
 	return nil
 }
-

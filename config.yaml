@@ -5,6 +5,8 @@
 
 web:
   addr: 0.0.0.0:7001
+  # 生产环境请设为 true；开启后程序会拒绝使用下方默认凭据。
+  production: false
   jwt_secret: jetlinks-edge-default-secret-change-me
   token_ttl: 24h
   default_user: admin
