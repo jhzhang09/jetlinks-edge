@@ -11,9 +11,9 @@
 边缘网关前端不应只是 CRUD 表格集合，而应成为运维人员进入系统后的第一工作台。核心目标是：
 
 1. 快速判断边缘网关是否正常运行。
-2. 看清南向采集、北向上送、插件注册和告警之间的关系。
-3. 能从概览进入南向设备、点位、北向应用、实时拓扑和告警处置。
-4. 新增编译期南向或北向插件时，前端配置表单能根据后端 Schema 动态渲染。
+2. 看清南向连接、采集组、北向应用、插件注册和告警之间的关系。
+3. 能从概览进入南向连接、采集组、点位、北向应用、插件中心、实时拓扑和告警处置。
+4. 新增内置或进程外插件时，前端配置表单能根据后端 Schema 动态渲染。
 5. 页面必须使用真实后端状态，不使用静态演示数据伪造运行效果。
 
 ### 1.2 当前范围
@@ -21,14 +21,16 @@
 | 页面 | 路由 | 文件 | 作用 |
 |---|---|---|---|
 | 登录页 | `/login` | `web/src/views/LoginView.vue` | 默认登录入口，已统一字体可读性 |
-| 系统概览 | `/dashboard` | `web/src/views/DashboardView.vue` | 运行健康、趋势、告警、南向设备总览 |
-| 实时拓扑 | `/topology` | `web/src/views/TopologyView.vue` | 南向设备、驱动插件、北向插件、北向应用链路拓扑 |
+| 系统概览 | `/dashboard` | `web/src/views/DashboardView.vue` | 运行健康、趋势、告警、连接与采集组总览 |
+| 实时拓扑 | `/topology` | `web/src/views/TopologyView.vue` | 南向插件、南向连接、采集组、北向应用和北向插件拓扑 |
 | 告警中心 | `/alarms` | `web/src/views/AlarmCenterView.vue` | 告警队列、诊断、恢复动作 |
-| 南向设备 | `/groups` | `web/src/views/GroupsView.vue` | 南向设备列表与动态驱动配置 |
+| 南向连接 | `/connections` | `web/src/views/ConnectionsView.vue` | 物理链路与南向插件配置 |
+| 采集组 | `/groups` | `web/src/views/GroupsView.vue` | 逻辑设备、采集周期与北向绑定 |
+| 插件中心 | `/plugins` | `web/src/views/PluginsView.vue` | 外部插件发现、校验和热重载 |
 | 点位详情 | `/groups/:id` | `web/src/views/GroupDetailView.vue` | 点位管理、实时值、OPC UA 节点浏览 |
 | 北向应用 | `/northbound` | `web/src/views/NorthboundView.vue` | 北向应用列表与动态北向配置 |
 
-当前方案是“编译期插件 + REST 轮询 + 真实运行态聚合”的一阶段方案。不包含运行时上传二进制插件、长期历史趋势、真实 CPU/磁盘采样、复杂告警规则引擎和 WebSocket/SSE 推送。
+当前方案采用“内置插件 + 进程外热插拔插件 + REST 轮询 + 真实运行态聚合”。不包含浏览器上传可执行文件、长期历史趋势、复杂告警规则引擎和 WebSocket/SSE 推送；外部插件由运维人员放入受控目录，再通过管理 API 原子扫描。
 
 ## 2. 设计稿来源与视觉方向
 
@@ -102,9 +104,11 @@
 | `web/src/styles/operations.css` | 运维中心共享设计 token、字体、按钮、表格、状态、面板样式 |
 | `web/src/views/LayoutView.vue` | 侧栏、顶栏、运行时节点信息、全局导航 |
 | `web/src/views/DashboardView.vue` | 系统概览，使用 `useOperations` 聚合状态 |
-| `web/src/views/TopologyView.vue` | 四层拓扑视图，使用 Canvas 绘制连线 |
+| `web/src/views/TopologyView.vue` | 五列拓扑视图，使用 Canvas 绘制连线 |
 | `web/src/views/AlarmCenterView.vue` | 告警队列、诊断、恢复动作 |
-| `web/src/views/GroupsView.vue` | 南向设备列表、创建、编辑、删除、重启 |
+| `web/src/views/ConnectionsView.vue` | 南向连接列表、创建、编辑、删除 |
+| `web/src/views/GroupsView.vue` | 采集组列表、创建、编辑、删除、重启 |
+| `web/src/views/PluginsView.vue` | 外部插件列表、扫描和热重载 |
 | `web/src/views/GroupDetailView.vue` | 点位管理、实时值、OPC UA 浏览 |
 | `web/src/views/NorthboundView.vue` | 北向应用列表、创建、编辑、删除、重启 |
 | `web/src/components/DynamicConfigForm.vue` | 按插件 Schema 动态渲染配置表单 |
@@ -119,10 +123,12 @@
 flowchart TD
     Login["登录页 /login"] --> Layout["运维中心 Layout"]
     Layout --> Dashboard["系统概览 /dashboard"]
-    Layout --> Groups["南向设备 /groups"]
+    Layout --> Connections["南向连接 /connections"]
+    Layout --> Groups["采集组 /groups"]
     Groups --> GroupDetail["点位详情 /groups/:id"]
     Layout --> Topology["实时拓扑 /topology"]
     Layout --> NorthApps["北向应用 /northbound"]
+	Layout --> Plugins["插件中心 /plugins"]
     Layout --> Alarms["告警中心 /alarms"]
     Dashboard --> Groups
     Dashboard --> Alarms
@@ -213,20 +219,22 @@ sequenceDiagram
 
 #### 实时拓扑
 
-四层结构：
+五列结构：
 
 1. 南向插件：`driverPlugins`
-2. 南向设备：`groups`
-3. 北向应用：`northApps`
-4. 北向应用插件：`northPlugins`
+2. 南向连接：`connections`
+3. 采集组：`groups`
+4. 北向应用：`northApps`
+5. 北向插件：`northPlugins`
 
 拓扑表达的是“插件归属 + 设备到应用的真实绑定”：
 
-1. 南向插件到南向设备表示该设备使用的驱动类型。
-2. 南向设备到北向应用表示真实的上送绑定关系。
-3. 北向应用到北向应用插件表示该应用使用的北向实现类型。
+1. 南向插件到南向连接表示该连接使用的插件类型。
+2. 南向连接到采集组表示物理链路复用关系。
+3. 采集组到北向应用表示真实的数据上送绑定。
+4. 北向应用到北向插件表示应用使用的协议实现。
 
-插件本身是逻辑能力，不直接承载设备到平台的网络连接；真正的运行连接关系应落在南向设备与北向应用之间。连线由 `TopologyFlowCanvas.vue` 根据 DOM 节点坐标和真实关系绘制，不应在组件内部请求 API。
+插件本身描述能力；运行实例分别落在南向连接和北向应用，采集组负责连接复用和数据路由。连线由 `TopologyFlowCanvas.vue` 根据 DOM 节点坐标和真实关系绘制，不在组件内部请求 API。
 
 #### 告警中心
 
@@ -240,7 +248,7 @@ sequenceDiagram
 
 当前告警不是历史事件，只表示当前仍存在的问题。
 
-#### 南向设备、点位详情与北向应用
+#### 南向连接、采集组、点位详情与北向应用
 
 这些页面保留 CRUD 能力，同时使用运维中心视觉。列表上方展示真实统计区；表格统一使用 `ops-table-card`；驱动类型、北向绑定、启用状态使用 `ops-tag` 或 `ops-state`；创建/编辑表单继续使用 Naive Modal；插件配置继续使用 `DynamicConfigForm`。
 
@@ -277,20 +285,20 @@ flowchart TD
 | `internal/driver/*` | 南向驱动实现 |
 | `internal/northbound/*` | 北向应用实现 |
 
-### 4.3 编译期插件模型
+### 4.3 插件模型
 
-当前支持的是“编译期插件”，即插件代码随主程序一起编译发布。
+当前同时支持两种插件：内置插件随主程序编译发布；外部插件通过 `jetlinks-edge-plugin/v1` 进程协议在运行时发现、替换和移除。
 
-插件化设计的核心目标不是运行时热插拔二进制，而是做到：
+插件化设计目标是做到：
 
-1. 后端新增插件时只新增插件包和注册代码。
+1. 内置插件只新增插件包和注册代码；外部插件无需修改或重新编译主程序。
 2. 配置字段通过 `ExtensionDescriptor` 暴露给前端。
 3. 前端不为具体插件硬编码专用表单。
-4. 运行时通过 `Runner` 统一管理生命周期、状态和热加载。
+4. 运行时通过 `Runner` 和 `externalplugin.Manager` 统一管理生命周期、状态和热插拔。
 
 ### 4.3.1 插件化边界
 
-| 维度 | 南向设备插件 | 北向应用插件 |
+| 维度 | 南向插件 | 北向插件 |
 |---|---|---|
 | 业务对象 | `Group` + `Tag` | `NorthApp` |
 | 兼容接口 | `core.SouthDriver` | `core.NorthHandler` |
@@ -472,7 +480,7 @@ sequenceDiagram
 2. Runner 必须使用内部 background context 派生运行时任务。
 3. Connection/NorthApp 热更新先建立候选实例；候选不可用时保留健康旧实例，成功后再切换引用并回收旧实例。
 4. 北向应用重建时，应恢复引用它的 Group 注册关系。
-5. 删除 NorthApp 时必须同步清理点组北向关系表和兼容字段，避免悬挂引用。
+5. 删除 NorthApp 时必须同步清理采集组北向关系表和兼容字段，避免悬挂引用。
 
 ### 4.3.7 状态与观测
 
@@ -533,7 +541,7 @@ sequenceDiagram
     Runner->>Runner: 缓存 LastValues / DriverStatus
 ```
 
-多个 Group 可以引用同一个 NorthApp。Runner 内维护北向实例池，Group 启动时引用池中的实例，避免每个南向设备都创建一条 MQTT 连接。
+多个 Group 可以引用同一个 NorthApp。Runner 内维护北向实例池，采集组启动时引用池中的实例，避免每个逻辑设备都创建一条 MQTT 连接。
 
 关键规则：
 

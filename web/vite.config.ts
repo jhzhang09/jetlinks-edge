@@ -9,7 +9,7 @@ export default defineConfig({
   plugins: [vue()],
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './src')
+		  '@': path.resolve(import.meta.dirname, './src')
     }
   },
   server: {
@@ -25,24 +25,6 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
-    rollupOptions: {
-      output: {
-        // 边缘网关前端 chunk 切分策略。
-        // vite 8 + rolldown 已不再支持 manualChunks 对象字面量，必须改为 ManualChunksFunction。
-        // 这里按包名前缀将 vue 全家桶、naive-ui、axios 拆为独立 chunk，便于浏览器长期缓存。
-        manualChunks: (id) => {
-          if (/node_modules\/(vue|vue-router|pinia)\//.test(id)) {
-            return 'vue'
-          }
-          if (/node_modules\/naive-ui\//.test(id)) {
-            return 'naive-ui'
-          }
-          if (/node_modules\/axios\//.test(id)) {
-            return 'axios'
-          }
-          return undefined
-        }
-      }
-    }
+    chunkSizeWarningLimit: 1500
   }
 })

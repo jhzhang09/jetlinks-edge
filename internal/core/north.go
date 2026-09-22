@@ -13,7 +13,7 @@ type NorthAppFactory func(ctx context.Context, appID string, cfg NorthAppConfig)
 // NorthMessageFactory 创建只要求上行消息处理能力的北向插件实例。
 type NorthMessageFactory func(ctx context.Context, appID string, cfg NorthAppConfig) (NorthMessageHandler, error)
 
-// GroupStatusProvider 按点组 ID 查询南向驱动的实时状态。
+// GroupStatusProvider 按采集组 ID 查询南向连接的实时状态。
 //
 // 北向应用只读取状态用于上送或展示，不拥有南向驱动生命周期。
 type GroupStatusProvider func(groupID string) (DriverStatus, bool)
@@ -57,8 +57,19 @@ func (r *NorthRegistry) RegisterExtension(descriptor ExtensionDescriptor, factor
 func (r *NorthRegistry) RegisterMessageExtension(descriptor ExtensionDescriptor, factory NorthMessageFactory) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if descriptor.Runtime == "" {
+		descriptor.Runtime = "builtin"
+	}
 	r.factories[descriptor.Type] = factory
 	r.descriptors[descriptor.Type] = descriptor
+}
+
+// Unregister 删除指定类型的北向工厂。已创建实例不受影响，由 Runner 负责生命周期收敛。
+func (r *NorthRegistry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.factories, name)
+	delete(r.descriptors, name)
 }
 
 // Names 返回所有已注册北向应用名。

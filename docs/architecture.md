@@ -7,7 +7,8 @@
 
 | 文档 | 用途 | 当前处理 |
 |---|---|---|
-| [operations-center-design.md](operations-center-design.md) | 运维中心前端设计、后端架构、南北向编译期插件化设计、接口契约和验证清单 | 主设计文档 |
+| [operations-center-design.md](operations-center-design.md) | 运维中心设计、后端架构、内置与外部插件模型、接口契约和验证清单 | 主设计文档 |
+| [terminology.md](terminology.md) | 代码、API、页面和文档的统一术语 | 术语规范 |
 | [jetlinks-integration.md](jetlinks-integration.md) | JetLinks MQTT 网关 + 子设备接入协议、主题、认证和上下行消息说明 | 专题保留 |
 | [modbus-config.md](modbus-config.md) | Modbus 地址、数据类型、字节序、decimal、bit、性能与错误码说明 | 专题保留 |
 
@@ -66,18 +67,21 @@ mqtt.Register(northRegistry)
 | GET | `/api/v1/extensions/drivers` | 南向插件描述符、连接 Schema、点位 Schema |
 | GET | `/api/v1/extensions/north-apps` | 北向插件描述符和配置 Schema |
 | GET | `/api/v1/operations` | 运维中心运行态聚合视图 |
-| GET/POST/PUT/DELETE | `/api/v1/groups` | 南向设备点组管理 |
+| GET/POST/PUT/DELETE | `/api/v1/connections` | 南向连接管理 |
+| GET/POST/PUT/DELETE | `/api/v1/groups` | 采集组管理 |
 | GET/POST/PUT/DELETE | `/api/v1/tags` | 点位管理 |
 | GET/POST/PUT/DELETE | `/api/v1/north-apps` | 北向应用管理 |
+| GET/POST | `/api/v1/plugins` | 外部插件列表与热重载 |
 | GET | `/api/v1/status` | 基础运行状态 |
 
 ## 设计原则摘要
 
 1. 旧版南向插件继续实现 `core.SouthDriver`；新插件可从 `core.DriverLifecycle` 起步，按需实现 `TagReader`、`TagWriter`、`NodeBrowser`、`FunctionInvoker`。
 2. 旧版双向北向插件继续实现 `core.NorthHandler`；仅上行插件可实现 `core.NorthMessageHandler`，下行能力通过 `NorthAppConfig.CommandExecutor` 回调 Runner。
-3. 点组与北向应用使用关系表持久化多对多绑定，`northAppId` 逗号字段只保留为现有 API 兼容层。
-4. 插件代码随主程序编译发布，当前不是运行时上传二进制插件。
+3. 采集组与北向应用只通过关系表持久化多对多绑定，`northAppId` 仅为由关系表派生的 API 兼容视图。
+4. 内置插件随主程序编译；外部插件使用 `jetlinks-edge-plugin/v1` 进程协议，可通过插件目录和管理 API 热插拔。
 5. 插件配置必须通过 `ExtensionDescriptor` 暴露 Schema，前端通过 `DynamicConfigForm.vue` 动态渲染。
 6. 新增插件时优先补充描述符、配置校验、定向测试和运维状态来源，不为单个插件硬编码专用页面。
 
 更完整的生命周期、热加载、状态聚合和新增插件步骤见 [运维中心设计与实现说明](operations-center-design.md)。
+外部插件清单、进程协议和热插拔流程见 [外部插件协议与热插拔](external-plugins.md)。

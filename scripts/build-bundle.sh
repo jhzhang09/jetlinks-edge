@@ -171,7 +171,9 @@ build_one() {
   # （前端构建产物已在编译时通过 go:embed 机制直接内嵌进二进制中，无需额外拷贝）
 
   # 复制配置文件（示例）
-  run_with_retries cp config.yaml "$bundle/config.yaml" || return 1
+	run_with_retries cp config.yaml "$bundle/config.yaml" || return 1
+	run_with_retries mkdir -p "$bundle/plugins" || return 1
+	run_with_retries cp plugins/README.md "$bundle/plugins/README.md" || return 1
 
   # README
   local readme
@@ -192,7 +194,7 @@ JetLinks 平台的 Go 语言边缘网关。Modbus TCP 采集 → JetLinks MQTT �
   2. 直接运行（测试）
      chmod +x bin/${exe_name}
      ./bin/${exe_name} -c config.yaml
-     → 访问 http://localhost:7001  · 登录 admin / admin123
+     → 访问 http://localhost:7001 · 开发测试登录 admin / admin123
 
   3. 安装到系统（生产）
      sudo /opt/edge-bundle/scripts/install.sh
@@ -245,9 +247,9 @@ JetLinks 平台的 Go 语言边缘网关。Modbus TCP 采集 → JetLinks MQTT �
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   1. 登录 Web 管理界面（http://<ip>:7001）
-  2. 创建网关（"北向网关" → "新建网关"）
+  2. 创建北向应用（“北向应用” → “新建北向应用”）
      填写 JetLinks 平台的 Broker 地址 + gateway 凭据
-  3. 创建子设备（"南向子设备" → "新建点组"）
+  3. 创建采集组（“采集组” → “新增采集组”）
      选择驱动 modbus-tcp，配置 Modbus 地址和点位
   4. 在 JetLinks 平台查看设备数据
 

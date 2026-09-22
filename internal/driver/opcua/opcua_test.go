@@ -1,4 +1,4 @@
-// Package opcua 测试 OPC UA 南向采集驱动。
+// Package opcua 测试 OPC UA 南向插件。
 // @author jhzhang
 // @date 2026-06-08
 package opcua

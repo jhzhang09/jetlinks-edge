@@ -6,6 +6,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,13 @@ type Config struct {
 	Log       LogConfig       `mapstructure:"log"`
 	Storage   StorageConfig   `mapstructure:"storage"`
 	Collector CollectorConfig `mapstructure:"collector"`
+	Plugins   PluginConfig    `mapstructure:"plugins"`
+}
+
+// PluginConfig 外部进程插件配置。
+type PluginConfig struct {
+	Enabled   bool   `mapstructure:"enabled"`
+	Directory string `mapstructure:"directory"`
 }
 
 // WebConfig 管理界面相关配置。
@@ -31,6 +39,7 @@ type WebConfig struct {
 	DefaultUser     string        `mapstructure:"default_user"`     // 首次启动创建的默认账号
 	DefaultPassword string        `mapstructure:"default_password"` // 首次启动创建的默认密码
 	StaticDir       string        `mapstructure:"static_dir"`       // 前端静态文件目录（生产模式嵌入二进制时为空）
+	TrustedProxies  []string      `mapstructure:"trusted_proxies"`  // 可信反向代理 CIDR；留空时不信任转发来源
 }
 
 // LogConfig 日志配置。
@@ -67,6 +76,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("web.default_user", "admin")
 	v.SetDefault("web.default_password", "admin123")
 	v.SetDefault("web.static_dir", "")
+	v.SetDefault("web.trusted_proxies", []string{})
 
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.output", "stdout")
@@ -78,6 +88,8 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("collector.read_timeout", "3s")
 	v.SetDefault("collector.write_timeout", "3s")
 	v.SetDefault("collector.reconnect_delay", "5s")
+	v.SetDefault("plugins.enabled", true)
+	v.SetDefault("plugins.directory", "plugins")
 
 	// 环境变量覆盖
 	v.SetEnvPrefix("JETLINKS_EDGE")
@@ -103,6 +115,12 @@ func Load(path string) (*Config, error) {
 			base := filepath.Dir(exe)
 			cfg.Storage.DSN = filepath.Join(base, cfg.Storage.DSN)
 			_ = os.MkdirAll(filepath.Dir(cfg.Storage.DSN), 0755)
+		}
+	}
+	if cfg.Plugins.Directory != "" && !filepath.IsAbs(cfg.Plugins.Directory) {
+		base, err := filepath.Abs(filepath.Dir(path))
+		if err == nil {
+			cfg.Plugins.Directory = filepath.Join(base, cfg.Plugins.Directory)
 		}
 	}
 
@@ -132,7 +150,17 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("collector.write_timeout must be greater than zero")
 	case c.Collector.ReconnectDelay <= 0:
 		return fmt.Errorf("collector.reconnect_delay must be greater than zero")
+	case c.Plugins.Enabled && c.Plugins.Directory == "":
+		return fmt.Errorf("plugins.directory is required when plugins are enabled")
 	default:
+		for _, proxy := range c.Web.TrustedProxies {
+			if net.ParseIP(proxy) != nil {
+				continue
+			}
+			if _, _, err := net.ParseCIDR(proxy); err != nil {
+				return fmt.Errorf("web.trusted_proxies contains invalid IP or CIDR %q", proxy)
+			}
+		}
 		return nil
 	}
 }

@@ -1,11 +1,11 @@
 # JetLinks Edge
 
 JetLinks 平台的 Go 语言边缘网关。**当前已实现**：Modbus TCP / OPC UA 采集 → JetLinks MQTT / Generic MQTT 上送。
-**预留扩展**：南向驱动（Siemens S7、Modbus RTU、BACnet、MQTT-Client…）和北向传输（HTTP webhook、Sparkplug B、InfluxDB…）均可通过接口扩展。
+**扩展方向**：南向插件（Siemens S7、Modbus RTU、BACnet、MQTT Client 等）和北向插件（HTTP Webhook、Sparkplug B、InfluxDB 等）均可通过内置接口或进程外协议扩展。
 
-> **v0.5 · Pluggable Runtime Edition**：可插拔南向采集与北向传输 · JetLinks 网关+子设备模型按官方协议 V1.3.1 · MD5 动态认证 · 全平台自包含发布包
+> **Pluggable Runtime Edition**：内置插件 + 跨平台进程外热插拔插件 · JetLinks 网关与子设备模型 · 全平台自包含发布包
 
-> 架构参考 [EMQX Neuron](https://github.com/emqx/neuron)：南向驱动 + 北向传输 + 点组/点位模型 + Web 管理。
+> 架构参考 [EMQX Neuron](https://github.com/emqx/neuron)：南向插件 + 北向插件 + 采集组/点位模型 + Web 管理。
 
 ## 界面预览 (Web Console Preview)
 
@@ -24,7 +24,7 @@ JetLinks 平台的 Go 语言边缘网关。**当前已实现**：Modbus TCP / OP
 | ☀️ 拓扑大屏 (白天清晰模式) | 📈 仪表盘/控制台总览 |
 | :---: | :---: |
 | ![白天拓扑](docs/assets/screenshot-topology-light.png) | ![控制台总览](docs/assets/screenshot-dashboard.png) |
-| **🔌 南向物理通道 (物理链路)** | **📦 南向采集组 (逻辑设备)** |
+| **🔌 南向连接（物理链路）** | **📦 采集组（逻辑设备）** |
 | ![通道管理](docs/assets/screenshot-connections.png) | ![采集组管理](docs/assets/screenshot-groups.png) |
 | **🏷️ 采集点位列表与物模型映射** | **🚨 实时告警中心** |
 | ![点位详情](docs/assets/screenshot-group-detail.png) | ![告警中心](docs/assets/screenshot-alarms.png) |
@@ -42,7 +42,7 @@ JetLinks 平台的 Go 语言边缘网关。**当前已实现**：Modbus TCP / OP
   - 支持 AB/BA/ABCD/BADC/CDAB/DCBA 等字节序
   - 支持 decimal 缩放系数
 - **北向上送**：JetLinks MQTT 网关客户端
-  - **JetLinks 网关 + 子设备 模型**：整个边缘网关作为 1 个网关设备连接平台，多个子设备（点组）共享同一条 MQTT 连接
+  - **JetLinks 网关 + 子设备模型**：整个边缘网关作为 1 个网关设备连接平台，多个子设备（采集组）共享同一条 MQTT 连接
   - 主题严格遵循 JetLinks 官方协议 V1.3.1：`/{gwProductId}/{gwDeviceId}/child/{childDeviceId}/properties/report`
   - 支持属性上报、读属性、写属性、指令回复、子设备注册；功能调用需南向驱动实现 `FunctionInvoker`
   - 断线自动重连
@@ -53,24 +53,25 @@ JetLinks 平台的 Go 语言边缘网关。**当前已实现**：Modbus TCP / OP
   - **响应式侧边栏**：支持菜单栏一键折叠与展开收拢，优化紧凑化视口适配。
   - **精细化表单排版**：优化了新增/编辑配置框的行间距和上下紧凑度，最大化利用显示空间。
   - **中英文多语言一键切换**。
-  - **实时拓扑关系图**：基于 Canvas 交互渲染，动态展示北向网关、本地网关与南向设备点组的连接关系与状态（白天主题去雾清晰显示，夜间主题展现酷炫荧光特效）。
+  - **实时拓扑关系图**：基于 Canvas 交互渲染，动态展示南向插件、南向连接、采集组、北向应用与北向插件的关系和状态。
   - **实时告警中心**：设备故障与网络异常告警的实时动态推送、查询与归档。
   - **操作日志与事件流**：控制台级日志动态呈现，实时观测数据采集及上报状态。
-  - **数据基础管理**：JWT 登录认证、点组/点位 CRUD 操作、北向传输管理、采集状态总览等。
+  - **数据基础管理**：JWT 登录认证、采集组/点位 CRUD、北向应用管理和采集状态总览。
 - **部署**：自包含发布包（macOS / Linux / Windows），可选一键安装 + systemd
 - **预留扩展**：通过 `SouthDriver` / `NorthHandler` 接口接入新协议，不影响核心调度
+- **热插拔插件**：通过 `plugins/*.json` 清单和独立可执行进程动态新增、替换或移除南向/北向插件，无需重新编译主程序
 
 
 
 ## 插件生态与使用文档
 
-本边缘网关采用模块化插件机制，当前已内置支持以下南向采集与北向传输插件，请参阅详细说明文档：
+本边缘网关采用模块化插件机制，当前内置以下南向和北向插件；外部插件协议见 [外部插件协议与热插拔](docs/external-plugins.md)。
 
-### 南向采集插件
+### 南向插件
 *   [Modbus TCP 采集插件](docs/south-modbus.md) - 支持寄存器区域合并、批量读取优化、字节序转换及 decimal 缩放。
 *   [OPC UA 采集插件](docs/south-opcua.md) - 支持安全策略、用户名/密码认证以及**基于 Browse 的节点树可视化批量添加点位**的最佳实践。
 
-### 北向传输插件
+### 北向插件
 *   [JetLinks MQTT 传输插件](docs/north-jetlinks.md) - 实现网关+子设备接入模型、MD5 动态认证及数据按官方协议格式上送。
 *   [Generic MQTT 传输插件](docs/north-generic.md) - 支持向通用 MQTT Broker（如 EMQX、Mosquitto）推送采集值，并支持基于自定义 Topic 的下行指令回写控制。
 
@@ -83,7 +84,7 @@ jetlinks-edge/
 │   ├── config/               # 配置加载（支持环境变量覆盖）
 │   ├── core/                 # 核心：Driver / NorthApp 接口 + Runner 调度器 + refCount 订阅
 │   ├── driver/modbus/        # Modbus TCP 南向驱动（区域合并、批量读取）
-│   ├── northbound/jetlinksmqtt/ # JetLinks MQTT 北向传输（网关+子设备模型、MD5 认证、refCount 按需订阅）
+│   ├── northbound/jetlinksmqtt/ # JetLinks MQTT 北向插件（网关+子设备模型、MD5 认证、refCount 按需订阅）
 │   ├── store/                # 持久化（SQLite / PostgreSQL）
 │   ├── web/                  # HTTP API（Gin + JWT）
 │   └── logger/               # zap 结构化日志
@@ -119,7 +120,7 @@ make web
 ./bin/jetlinks-edge -c config.yaml
 ```
 
-启动后访问 http://localhost:7001，使用 `admin / admin123` 登录。
+开发配置启动后访问 http://localhost:7001，使用 `admin / admin123` 登录。该配置只监听回环地址；生产安装会生成随机初始密码和 JWT 密钥。
 
 ### 方式 2：Docker 部署
 
@@ -142,15 +143,15 @@ make web-dev
 
 ## 使用流程
 
-> **核心架构**：JetLinks Edge 采用 **“南向采集 - 采集组 - 点位”** 三层物理与逻辑拓扑解耦架构：
-> 1. **南向采集 (Connection)**：代表南向物理网络通道（如 Modbus TCP 链路），定义协议驱动与连通参数。
-> 2. **采集组 (Group)**：代表平台逻辑子设备，定义周期采集间隔，并绑定北向上送网关。多个逻辑采集组可共享/复用同一个南向采集。
+> **核心架构**：JetLinks Edge 采用 **“南向连接 - 采集组 - 点位 - 北向应用”** 的物理与逻辑解耦架构：
+> 1. **南向连接 (Connection)**：代表物理链路（如 Modbus TCP 连接），定义南向插件与连通参数。
+> 2. **采集组 (Group)**：代表逻辑设备，定义周期采集和设备身份；多个采集组可复用同一个南向连接，并绑定一个或多个北向应用。
 > 3. **点位 (Tag)**：隶属于采集组，定义具体寄存器地址及值转换规则。
 
 | 实体 | 含义 | 包含的字段 |
 |---|---|---|
-| **网关**（北向传输）| 1 个 MQTT 连接，1 个 JetLinks 网关设备 | broker、gateway username、gateway password、clientId |
-| **南向采集** | 1 条物理网络通道，定义物理连接与驱动 | name、driver (如 modbus-tcp)、config (IP, 端口等) |
+| **北向应用** | 1 个数据出口，例如 MQTT 连接或 HTTP 推送实例 | broker、认证信息、客户端标识 |
+| **南向连接** | 1 条物理链路，由南向插件管理 | name、driver（如 modbus-tcp）、config（IP、端口等） |
 | **采集组**（逻辑设备）| 1 台子设备，周期采集并绑定北向上送 | name、connectionId、intervalMs、**device: {productId, deviceId}**、northAppId |
 | **点位**（Tag） | 1 个数据点，隶属于采集组 | name、address、type、byteOrder、access、scale |
 
@@ -163,7 +164,7 @@ make web-dev
 
 ### 2. 在边缘网关注册
 
-#### 步骤 A：创建网关（"网关管理" → "新建网关"）
+#### 步骤 A：创建北向应用（“北向应用” → “新建北向应用”）
 
 | 字段 | 示例值 | 说明 |
 |---|---|---|
@@ -177,7 +178,7 @@ make web-dev
 | KeepAlive | 30 | 秒 |
 | timestamp 容差 | 300 | 秒（默认 5 分钟） |
 
-**重要**：网关在 JetLinks 平台里**也是一台设备**——有自己的 ProductID/DeviceID/SecureID/SecureKey。子设备的 productId/deviceId 在"南向采集组"页面配置。
+**重要**：JetLinks 北向应用对应平台网关设备，有自己的 ProductID/DeviceID/SecureID/SecureKey；子设备的 productId/deviceId 在采集组中配置。
 
 **认证**（程序自动按 JetLinks 规范计算）：
 - `clientId` = `deviceId`
@@ -193,12 +194,12 @@ make web-dev
 - `/{gwPid}/{gwDid}/child/{childDid}/online`（子设备在线）
 网关**本身**不需要 register——它已是平台上一台真实设备，由人工在 JetLinks 平台创建。
 
-#### 步骤 B：创建南向采集（"通道管理" → "新建南向采集"）
+#### 步骤 B：创建南向连接（“南向连接” → “新增连接”）
 
 | 字段 | 示例值 | 说明 |
 |---|---|---|
 | 名称 | Modbus设备-1 | 物理网络通道展示名称 |
-| 驱动 | `modbus-tcp` | 南向采集协议驱动 |
+| 南向插件 | `modbus-tcp` | 负责该连接的协议实现 |
 | 主机 / 端口 | `127.0.0.1` / `502` | 硬件连通参数 |
 
 #### 步骤 C：创建逻辑采集组（"采集组管理" → "新建采集组"）
@@ -206,13 +207,13 @@ make web-dev
 | 字段 | 示例值 | 说明 |
 |---|---|---|
 | 名称 | plc-1 | 采集组名称 |
-| 南向采集 | 选择 "Modbus设备-1" | 绑定的通道连接（可实现物理链路多组复用） |
+| 南向连接 | 选择 "Modbus设备-1" | 绑定的物理连接，可被多个采集组复用 |
 | 采集周期 | `1000` ms | 本组点位的采集轮询间隔 |
 | **网关** | 选择 "产线网关-001" | 数据北向上送绑定通道 |
 | **子设备身份** | productId=`test-product`，deviceId=`edge-plc-1` | **在 JetLinks 平台上对应的子设备身份** |
 
 > - **必须填子设备身份**（绑定了北向网关时）
-> - **物理链路多组复用**：多个采集组可以复用同一个南向采集，避免建立过多 TCP 连接造成系统瘫痪。
+> - **连接复用**：多个采集组可以复用同一个南向连接，避免建立过多 TCP 连接。
 > - **不选网关** = 只采集不上送（本地纯监控场景）
 
 #### 步骤 D：添加点位（Tag）
@@ -221,7 +222,7 @@ make web-dev
 
 #### 步骤 E：验证与拓扑监视
 
-- 拓扑页面：观察 **“南向插件 - 南向采集 - 采集组 - 北向传输 - 北向传输插件”** 五列等高拓扑连线大屏及实时在线连通状态。
+- 拓扑页面：观察 **“南向插件 - 南向连接 - 采集组 - 北向应用 - 北向插件”** 五列拓扑及实时状态。
 - 数据页面：Web 页面观察实时值。
 - 在 JetLinks 平台：查看网关与子设备的运行状态、属性数据、消息日志。
 
@@ -229,11 +230,11 @@ make web-dev
 
 | 想做什么 | 怎么做 |
 |---|---|
-| 修改 broker / 网关账号 | "网关管理" → 编辑 → 保存。所有使用它的子设备共享新连接 |
-| 添加新子设备 | "南向点组" → 新建 → 选已有网关 + 填新 deviceId |
-| 切换子设备的上送通道 | "南向点组" → 编辑 → 选另一个网关。Modbus 连接**不中断** |
+| 修改 broker / 网关账号 | “北向应用” → 编辑 → 保存。所有绑定采集组共享新连接 |
+| 添加新子设备 | “采集组” → 新建 → 选已有北向应用并填写 deviceId |
+| 切换子设备的上送通道 | “采集组” → 编辑 → 选择其他北向应用，南向连接不中断 |
 | 删除网关 | 自动解除所有子设备的绑定 + 销毁共享连接 |
-| 临时停用上送 | 编辑网关把"启用"关掉，或编辑点组清空"网关" |
+| 临时停用上送 | 禁用北向应用，或清空采集组的北向应用绑定 |
 
 ### 4. 关于"每设备独立连接"模式（后续版本预留）
 
@@ -274,7 +275,7 @@ mosquitto_pub -h broker_host -p 1883 \
 | `JETLINKS_EDGE_WEB_ADDR` | `0.0.0.0:7001` | Web 监听地址 |
 | `JETLINKS_EDGE_WEB_JWT_SECRET` | （需修改）| JWT 签名密钥 |
 | `JETLINKS_EDGE_WEB_DEFAULT_USER` | `admin` | 首次启动默认账号 |
-| `JETLINKS_EDGE_WEB_DEFAULT_PASSWORD` | `admin123` | 首次启动默认密码 |
+| `JETLINKS_EDGE_WEB_DEFAULT_PASSWORD` | `admin123`（仅开发） | 首次启动密码；生产必须使用随机高强度值 |
 | `JETLINKS_EDGE_LOG_LEVEL` | `info` | 日志级别 |
 | `JETLINKS_EDGE_STORAGE_DSN` | `data/jetlinks-edge.db` | SQLite 文件路径或 Postgres DSN |
 
@@ -302,7 +303,7 @@ func Register(r *core.DriverRegistry) {
 opcua.Register(driverRegistry)
 ```
 
-### 新增北向传输
+### 新增北向插件
 
 ```go
 // internal/northbound/kafka/app.go
@@ -536,11 +537,11 @@ python3 scripts/mock_modbus_server.py 5020
   <- write single addr=0 val=999
 ```
 
-然后在 Web 管理界面 / API 中添加一个 host=127.0.0.1 port=5020 unitId=1 的点组即可。
+然后在 Web 管理界面创建 `host=127.0.0.1 port=5020` 的南向连接，再创建 `unitId=1` 的采集组即可。
 
 ### 3. 端到端测试
 
-`scripts/e2e_test.py` 是一站式端到端测试脚本，验证：登录 → 创建点组 → 添加点位
+`scripts/e2e_test.py` 是一站式端到端测试脚本，验证：登录 → 创建南向连接 → 创建采集组 → 添加点位
 → 等待采集 → 验证实时值 → 主动写寄存器 → 主动读寄存器。
 
 ```bash
@@ -559,7 +560,7 @@ python3 scripts/e2e_test.py
 ```
 == 1. 登录 ==
    token = eyJhbGciOiJIUzI1NiIsInR5cCI6Ik...
-== 2. 创建点组 ==
+== 2. 创建南向连接和采集组 ==
    gid = ...
 == 3. 添加 3 个点位 ==
    tag reg1 = ...
@@ -640,7 +641,7 @@ go test ./pkg/modbuslib/...
 
 ## 已知限制（v0.5）
 
-- **南向采集限制**：当前内置 Modbus TCP 与 OPC UA，RTU 串口版本未实现；可通过南向插件接口继续扩展。
+- **南向插件限制**：当前内置 Modbus TCP 与 OPC UA，RTU 串口版本未实现；可通过内置接口或外部进程协议继续扩展。
 - **用户权限控制**：目前统一使用默认的 `admin` 管理员账号，暂不支持多用户及细粒度的角色权限划分。
 - **系统 OTA 升级**：暂不支持固件或软件版本的在线 OTA 升级。
 
@@ -648,7 +649,7 @@ go test ./pkg/modbuslib/...
 
 ### v0.5.0 (Current)
 * **插件运行时加固**：保留现有插件接口兼容性，新增按能力组合的南向/北向扩展接口，并完善热更新、停止、重连和实例替换的生命周期边界。
-* **多北向绑定**：点组与北向应用支持多对多关系持久化，旧 `northAppId` 字段继续作为 API 兼容层并自动迁移。
+* **多北向绑定**：采集组与北向应用使用权威关系表持久化，`northAppId` 仅作为 API 兼容视图并支持旧数据自动迁移。
 * **命令与传输可靠性**：增加北向命令归属校验、可选功能调用、MQTT QoS 0/1、有界并发、操作超时和投递统计。
 * **配置安全**：增加敏感配置脱敏、密码占位符更新、生产环境默认凭据保护以及 JSON 配置错误传播。
 * **并发与资源管理**：修复点位配置共享 Map 风险，串行化热更新生命周期，拆分高频点位缓存锁，并完善 EventBus 退订和 MQTT 关闭流程。
@@ -656,10 +657,10 @@ go test ./pkg/modbuslib/...
 * **认证文档纠正**：JetLinks MQTT 动态密码公式统一为官方协议规定的 `MD5(secureId|timestamp|secureKey)`。
 
 ### v0.4
-* **三层拓扑重构**：重塑了整体工业拓扑物理链路，拆分并解耦为 **“南向采集 - 采集组 - 点位”** 三层拓扑架构，实现了多路逻辑采集组对单一南向采集的链路连接复用（物理链路多组复用）。
-* **批量查询性能优化**：对后端数据层加载（GORM / GORM Session）进行了深入的重构与性能剖析，引入 Batch 批量通道映射，彻底清除了点组/点位列表加载时的多次循环 N+1 SQL 瓶颈。
+* **拓扑重构**：拆分为 **“南向插件 - 南向连接 - 采集组 - 点位 - 北向应用 - 北向插件”**，支持连接复用与多北向绑定。
+* **批量查询性能优化**：后端数据层采用批量连接映射，清除采集组/点位列表加载中的 N+1 SQL。
 * **等高与精致化拓扑图大屏**：重构了 Web 实时拓扑页面（`TopologyView.vue`），统一卡片为 **86px 固定等高** 排布以实现像素级对齐线，并将状态 Badge（已连接/离线/停止）尺寸精致缩小（`font-size: 8.5px`，`padding: 1.5px 5px`），呼吸圆点降至 `5px`，美观紧致。
-* **南向采集运维指标屏**：在南向采集页面（`ConnectionsView.vue`）上方，引入了与总体仪表盘设计语言一致的 Health Panel，可一目了然查看网关南向采集总数、启用率、在线率及支持的南向驱动协议数。
+* **南向连接运维指标屏**：在 `ConnectionsView.vue` 展示连接总数、启用率、在线率和南向插件数量。
 * **主题与体验**：新增 ☀️ 白天 / 🌙 夜间高对比度主题切换（默认夜间主题），重构 Canvas 连线在白天背景下的去雾清晰实线绘制逻辑，夜间主题保留发光荧光特效。
 * **侧边栏折叠**：修复了侧边栏最底部展开/收起折叠按钮失效的 Bug，实现了平滑视口自适应收拢。
 * **视觉优化**：放大并加粗了侧边栏主菜单字体，极大提升导向可读性；精细优化了新增/编辑表单输入框的垂直间距与紧凑排版，节约屏幕操作空间。
@@ -668,9 +669,9 @@ go test ./pkg/modbuslib/...
 * **流水线配置**：新增 Apache 2.0 英文许可证（LICENSE），并补充了 CONTRIBUTING.md 开发贡献规范和基于 GitHub Actions 的 CI (`ci.yml`) / CD (`release.yml`) 自动发布脚本。
 
 ### v0.3
-* **北向上送**：实现了 **JetLinks 官方网关与子设备映射模型**。支持多个子设备逻辑实体（点组）共享同一条物理 MQTT 网关长连接上报。
+* **北向上送**：实现了 **JetLinks 官方网关与子设备映射模型**。支持多个采集组共享同一条 MQTT 网关长连接上报。
 * **动态认证**：引入基于 MD5 公式的动态计算鉴权与连接机制，新增 timestamp 周期自动刷新与长连接重连防超时过期。
-* **业务管理**：提供了独立的北向传输管理及南向子设备点组的注册、上线与数据上送控制。
+* **业务管理**：提供独立的北向应用管理、采集组注册、上线与数据上送控制。
 
 ### v0.2
 * **多语言支持**：引入了完整的 Vue 多语言国际化（i18n）架构，支持中英双语一键切换。
@@ -690,7 +691,7 @@ go test ./pkg/modbuslib/...
 
 ### 中期计划 (v0.7)
 - **主流工控协议集成**：引入西门子 S7 协议驱动。
-- **北向传输规范**：支持 Sparkplug B 工业物联网规范协议的北向上送。
+- **北向插件**：支持 Sparkplug B 工业物联网规范协议的北向上送。
 - **OTA 与热配置**：支持配置模板的一键热导入与导出，设计轻量级系统固件与网关在线 OTA 升级。
 
 ### 远期规划 (v1.0)

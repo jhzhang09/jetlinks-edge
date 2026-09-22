@@ -37,7 +37,7 @@ func (h *StatusHandler) Status(c *gin.Context) {
 // Operations 返回面向运维工作台的聚合视图。
 //
 // 该接口只组合现有配置与运行时状态，不持久化或推断历史事件。告警表示当前仍存在的故障，
-// 前端可据此动态渲染概览、链路拓扑与故障处置页面，并保持对新增编译期插件的兼容。
+// 前端可据此动态渲染概览、链路拓扑与故障处置页面，并兼容内置和外部插件。
 func (h *StatusHandler) Operations(c *gin.Context) {
 	ctx := c.Request.Context()
 	conns, err := h.store.ListConnections(ctx)
@@ -61,17 +61,16 @@ func (h *StatusHandler) Operations(c *gin.Context) {
 		})
 	}
 
-	var groups []core.Group
-	if err := h.store.DB().WithContext(ctx).Order("name asc").Find(&groups).Error; err != nil {
+	groupPointers, err := h.store.ListGroups(ctx)
+	if err != nil {
 		errResp(c, http.StatusInternalServerError, err)
 		return
 	}
-	for i := range groups {
-		if err := groups[i].UnmarshalConfig(); err != nil {
-			errResp(c, http.StatusInternalServerError, err)
-			return
+	groups := make([]core.Group, 0, len(groupPointers))
+	for _, group := range groupPointers {
+		if group != nil {
+			groups = append(groups, *group)
 		}
-		h.store.PopulateGroupDriver(&groups[i])
 	}
 	northApps, err := h.runner.ListNorthAppStatus(ctx)
 	if err != nil {
@@ -109,7 +108,7 @@ func (h *StatusHandler) Operations(c *gin.Context) {
 				if !running {
 					message = "南向驱动未运行"
 				} else {
-					message = "南向设备连接中断"
+					message = "南向连接中断"
 				}
 			}
 			alarms = append(alarms, operationAlarm{
@@ -150,9 +149,9 @@ func (h *StatusHandler) Operations(c *gin.Context) {
 	}
 	for _, app := range northApps {
 		if app.Enabled && (!app.Running || !app.Connected) {
-			message := "北向传输未连接"
+			message := "北向应用未连接"
 			if !app.Running {
-				message = "北向传输未运行"
+				message = "北向应用未运行"
 			}
 			alarms = append(alarms, operationAlarm{
 				ID:         "north:" + app.ID,

@@ -19,6 +19,7 @@ const router = createRouter({
         { path: 'dashboard', name: 'dashboard', component: () => import('@/views/DashboardView.vue') },
         { path: 'topology', name: 'topology', component: () => import('@/views/TopologyView.vue') },
         { path: 'alarms', name: 'alarms', component: () => import('@/views/AlarmCenterView.vue') },
+		{ path: 'plugins', name: 'plugins', component: () => import('@/views/PluginsView.vue') },
         { path: 'connections', name: 'connections', component: () => import('@/views/ConnectionsView.vue') },
         { path: 'groups', name: 'groups', component: () => import('@/views/GroupsView.vue') },
         { path: 'groups/:id', name: 'group-detail', component: () => import('@/views/GroupDetailView.vue') },

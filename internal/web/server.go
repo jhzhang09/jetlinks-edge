@@ -6,11 +6,11 @@
 //	GET    /drivers                       列出南向驱动
 //	GET    /north-apps                    列出北向应用
 //
-//	GET    /groups                        列出点组
-//	POST   /groups                        新建点组
-//	GET    /groups/:id                    点组详情
-//	PUT    /groups/:id                    更新点组
-//	DELETE /groups/:id                    删除点组
+//	GET    /groups                        列出采集组
+//	POST   /groups                        新建采集组
+//	GET    /groups/:id                    采集组详情
+//	PUT    /groups/:id                    更新采集组
+//	DELETE /groups/:id                    删除采集组
 //	POST   /groups/:id/reload             热重启采集
 //
 //	GET    /groups/:id/tags               列出点位
@@ -38,6 +38,7 @@ import (
 
 	"github.com/jhzhang09/jetlinks-edge/internal/config"
 	"github.com/jhzhang09/jetlinks-edge/internal/core"
+	"github.com/jhzhang09/jetlinks-edge/internal/externalplugin"
 	"github.com/jhzhang09/jetlinks-edge/internal/store"
 	"github.com/jhzhang09/jetlinks-edge/internal/web/handler"
 	"github.com/jhzhang09/jetlinks-edge/internal/web/middleware"
@@ -54,12 +55,21 @@ type Server struct {
 }
 
 // New 创建 Web 服务。
-func New(cfg *config.Config, st *store.Store, runner *core.Runner) *Server {
+func New(cfg *config.Config, st *store.Store, runner *core.Runner, plugins *externalplugin.Manager) *Server {
 	st.SetAuthConfig(cfg.Web.JWTSecret, cfg.Web.TokenTTL)
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
+	trustedProxies := cfg.Web.TrustedProxies
+	if len(trustedProxies) == 0 {
+		trustedProxies = nil
+	}
+	if err := r.SetTrustedProxies(trustedProxies); err != nil {
+		zap.L().Error("configure trusted proxies failed; forwarded client IP headers are disabled", zap.Error(err))
+		_ = r.SetTrustedProxies(nil)
+	}
 	r.Use(gin.Recovery())
+	r.Use(middleware.SecurityHeaders())
 	r.Use(middleware.ZapLogger(zap.L()))
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"*"},
@@ -78,12 +88,16 @@ func New(cfg *config.Config, st *store.Store, runner *core.Runner) *Server {
 	tagH := handler.NewTagHandler(runner, st)
 	statusH := handler.NewStatusHandler(runner, st)
 	connectionH := handler.NewConnectionHandler(runner, st)
+	var pluginH *handler.PluginHandler
+	if plugins != nil {
+		pluginH = handler.NewPluginHandler(plugins, runner)
+	}
 
 	// 路由
 	api := r.Group("/api/v1")
 	{
 		// 公共
-		api.POST("/auth/login", authH.Login)
+		api.POST("/auth/login", middleware.LoginRateLimit(10, time.Minute), authH.Login)
 
 		// 需要鉴权
 		auth := api.Group("")
@@ -95,37 +109,41 @@ func New(cfg *config.Config, st *store.Store, runner *core.Runner) *Server {
 			auth.GET("/drivers", driverH.ListDrivers)
 			auth.GET("/extensions/drivers", driverH.ListDriverExtensions)
 			auth.GET("/extensions/north-apps", driverH.ListNorthExtensions)
+			if pluginH != nil {
+				auth.GET("/plugins", pluginH.List)
+				auth.POST("/plugins/reload", middleware.RequireRole("admin"), pluginH.Reload)
+			}
 
 			// 物理连接通道：独立 CRUD
 			auth.GET("/connections", connectionH.List)
 			auth.GET("/connections/:id", connectionH.Get)
-			auth.POST("/connections", connectionH.Create)
-			auth.PUT("/connections/:id", connectionH.Update)
-			auth.DELETE("/connections/:id", connectionH.Delete)
+			auth.POST("/connections", middleware.RequireRole("admin"), connectionH.Create)
+			auth.PUT("/connections/:id", middleware.RequireRole("admin"), connectionH.Update)
+			auth.DELETE("/connections/:id", middleware.RequireRole("admin"), connectionH.Delete)
 			auth.GET("/connections/drivers", connectionH.Drivers)
 
 			// 北向应用：独立 CRUD
 			auth.GET("/north-apps", northAppH.List)
 			auth.GET("/north-apps/:id", northAppH.Get)
-			auth.POST("/north-apps", northAppH.Create)
-			auth.PUT("/north-apps/:id", northAppH.Update)
-			auth.DELETE("/north-apps/:id", northAppH.Delete)
-			auth.POST("/north-apps/:id/reload", northAppH.Reload)
+			auth.POST("/north-apps", middleware.RequireRole("admin"), northAppH.Create)
+			auth.PUT("/north-apps/:id", middleware.RequireRole("admin"), northAppH.Update)
+			auth.DELETE("/north-apps/:id", middleware.RequireRole("admin"), northAppH.Delete)
+			auth.POST("/north-apps/:id/reload", middleware.RequireRole("admin"), northAppH.Reload)
 
 			auth.GET("/groups", groupH.List)
-			auth.POST("/groups", groupH.Create)
+			auth.POST("/groups", middleware.RequireRole("admin"), groupH.Create)
 			auth.GET("/groups/:id", groupH.Get)
-			auth.PUT("/groups/:id", groupH.Update)
-			auth.DELETE("/groups/:id", groupH.Delete)
-			auth.POST("/groups/:id/reload", groupH.Reload)
+			auth.PUT("/groups/:id", middleware.RequireRole("admin"), groupH.Update)
+			auth.DELETE("/groups/:id", middleware.RequireRole("admin"), groupH.Delete)
+			auth.POST("/groups/:id/reload", middleware.RequireRole("admin"), groupH.Reload)
 			auth.GET("/groups/:id/opcua/browse", groupH.BrowseOPCUA)
 
 			auth.GET("/groups/:id/tags", tagH.ListByGroup)
-			auth.POST("/groups/:id/tags", tagH.Create)
-			auth.PUT("/tags/:id", tagH.Update)
-			auth.DELETE("/tags/:id", tagH.Delete)
+			auth.POST("/groups/:id/tags", middleware.RequireRole("admin"), tagH.Create)
+			auth.PUT("/tags/:id", middleware.RequireRole("admin"), tagH.Update)
+			auth.DELETE("/tags/:id", middleware.RequireRole("admin"), tagH.Delete)
 			auth.POST("/tags/:id/read", tagH.Read)
-			auth.POST("/tags/:id/write", tagH.Write)
+			auth.POST("/tags/:id/write", middleware.RequireRole("admin"), tagH.Write)
 			auth.GET("/groups/:id/values", tagH.LastValues)
 
 			auth.GET("/status", statusH.Status)
@@ -135,7 +153,17 @@ func New(cfg *config.Config, st *store.Store, runner *core.Runner) *Server {
 
 	// 健康检查
 	r.GET("/healthz", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "ok"})
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+		defer cancel()
+		if err := st.Ping(ctx); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unavailable", "component": "storage"})
+			return
+		}
+		if !runner.Ready() {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unavailable", "component": "runtime"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
 	// 静态前端提供逻辑
@@ -207,6 +235,7 @@ func (s *Server) Start(addr string) error {
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 	zap.L().Info("web server listening", zap.String("addr", addr))
 	return s.server.ListenAndServe()

@@ -1,10 +1,10 @@
-# 通用 MQTT Broker 北向传输插件说明文档
+# 通用 MQTT Broker 北向插件说明
 
 `Generic MQTT` 传输插件允许边缘网关以标准 MQTT 客户端身份，将轮询采集到的数据上送到任意兼容 MQTT 3.1.1/5.0 协议标准的第三方 MQTT 代理服务器（如 EMQX、Mosquitto、ActiveMQ、HiveMQ、AWS IoT Core 等），满足灵活的多中心上送及异构系统对接需求。
 
 ---
 
-## 1. 北向传输通道配置
+## 1. 北向应用配置
 
 新建通用 MQTT 传输通道时，需要提供如下连接配置项：
 

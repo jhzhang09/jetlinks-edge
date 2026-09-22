@@ -24,12 +24,12 @@ func (h *DriverHandler) ListDrivers(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": drivers})
 }
 
-// ListDriverExtensions 列出全部南向编译期插件描述符。
+// ListDriverExtensions 列出全部南向插件描述符。
 func (h *DriverHandler) ListDriverExtensions(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": h.runner.DriverDescriptors()})
 }
 
-// ListNorthExtensions 列出全部北向编译期插件描述符。
+// ListNorthExtensions 列出全部北向插件描述符。
 func (h *DriverHandler) ListNorthExtensions(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": h.runner.NorthDescriptors()})
 }

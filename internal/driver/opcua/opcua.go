@@ -1,4 +1,4 @@
-// Package opcua 实现 OPC UA 南向采集驱动。
+// Package opcua 实现 OPC UA 南向插件。
 //
 // 本驱动包含：
 //  1. 匿名或用户名密码安全登录。
@@ -83,7 +83,7 @@ func Descriptor() core.ExtensionDescriptor {
 		Name:         "OPC UA",
 		Description:  "通过 OPC UA 协议从工业 PLC 周期采集或写入点位",
 		Version:      "1.0.0",
-		Capabilities: []string{"polling", "read", "write"},
+		Capabilities: []string{"polling", "read", "write", "browse"},
 		ConnectionSchema: []core.ConfigField{
 			{Key: "endpoint", Label: "端点地址", Type: core.ConfigFieldText, Required: true, Placeholder: "opc.tcp://127.0.0.1:4840"},
 			{Key: "policy", Label: "安全策略", Type: core.ConfigFieldSelect, Required: true, DefaultValue: "None", Options: []core.ConfigOption{

@@ -140,7 +140,8 @@ func TestStartNorthAppKeepsConnectedInstanceWhenReplacementIsOffline(t *testing.
 	if err := runner.startNorthApp(context.Background(), app); err == nil {
 		t.Fatal("expected disconnected replacement to be rejected")
 	}
-	if runner.northApps[app.ID].handler != instances[0] {
+	queued, ok := runner.northApps[app.ID].handler.(*queuedNorth)
+	if !ok || queued.target != instances[0] {
 		t.Fatal("connected north app was replaced")
 	}
 	if instances[0].closed != 0 || instances[1].closed != 1 {
@@ -236,6 +237,77 @@ func TestRunnerStopWaitsForGroupWorkersBeforeDisconnect(t *testing.T) {
 	}
 	if !driver.disconnected {
 		t.Fatal("connection was not closed after workers drained")
+	}
+}
+
+func TestReloadKeepsExistingGroupWhenPreparationFails(t *testing.T) {
+	store := &memStore{getGroupErr: errors.New("database unavailable")}
+	runner := NewRunner(NewDriverRegistry(), NewNorthRegistry(), store)
+	runner.bgCtx, runner.bgCancel = context.WithCancel(context.Background())
+	defer runner.bgCancel()
+
+	groupCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime := &groupRuntime{group: &Group{ID: "group-1"}, cancel: cancel}
+	runner.groups["group-1"] = runtime
+
+	if err := runner.Reload(context.Background(), "group-1"); err == nil {
+		t.Fatal("expected reload preparation error")
+	}
+	select {
+	case <-groupCtx.Done():
+		t.Fatal("existing group was canceled before replacement was prepared")
+	default:
+	}
+	if runner.groups["group-1"] != runtime {
+		t.Fatal("existing group runtime was replaced after preparation failure")
+	}
+}
+
+func TestReloadConnectionRemovesDependentGroupRuntime(t *testing.T) {
+	store := &memStore{
+		connections: map[string]*Connection{},
+		groups:      map[string]*Group{},
+	}
+	runner := NewRunner(NewDriverRegistry(), NewNorthRegistry(), store)
+	runner.bgCtx, runner.bgCancel = context.WithCancel(context.Background())
+	defer runner.bgCancel()
+
+	driver := &replacementDriver{}
+	runner.connections["conn-1"] = &connectionRuntime{
+		conn:   &Connection{ID: "conn-1"},
+		driver: driver,
+		cancel: func() {},
+	}
+	north := &lifecycleNorth{}
+	groupCtx, cancel := context.WithCancel(context.Background())
+	runtime := &groupRuntime{
+		group:  &Group{ID: "group-1", ConnectionID: "conn-1"},
+		norths: []NorthMessageHandler{north},
+		cancel: cancel,
+	}
+	runtime.wg.Add(1)
+	go func() {
+		defer runtime.wg.Done()
+		<-groupCtx.Done()
+	}()
+	runner.groups["group-1"] = runtime
+	runner.lastVals["group-1"] = map[string]TagValue{"tag-1": {TagID: "tag-1"}}
+
+	if err := runner.ReloadConnection(context.Background(), "conn-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := runner.groups["group-1"]; exists {
+		t.Fatal("dependent group runtime was not removed")
+	}
+	if _, exists := runner.connections["conn-1"]; exists {
+		t.Fatal("connection runtime was not removed")
+	}
+	if _, exists := runner.lastVals["group-1"]; exists {
+		t.Fatal("dependent group value cache was not removed")
+	}
+	if north.deregistered != 1 || !driver.disconnected {
+		t.Fatalf("runtime cleanup incomplete: deregistered=%d disconnected=%v", north.deregistered, driver.disconnected)
 	}
 }
 
@@ -798,6 +870,7 @@ type memStore struct {
 	tags        map[string][]*Tag
 	connections map[string]*Connection
 	northApps   map[string]*NorthApp
+	getGroupErr error
 }
 
 func (m *memStore) ListEnabledGroups(ctx context.Context) ([]*Group, error) {
@@ -810,6 +883,9 @@ func (m *memStore) ListEnabledGroups(ctx context.Context) ([]*Group, error) {
 	return out, nil
 }
 func (m *memStore) GetGroup(ctx context.Context, id string) (*Group, error) {
+	if m.getGroupErr != nil {
+		return nil, m.getGroupErr
+	}
 	return m.groups[id], nil
 }
 func (m *memStore) SaveGroup(ctx context.Context, g *Group) error {
@@ -850,6 +926,9 @@ func (m *memStore) GetNorthApp(ctx context.Context, id string) (*NorthApp, error
 func (m *memStore) SaveNorthApp(ctx context.Context, n *NorthApp) error {
 	m.northApps[n.ID] = n
 	return nil
+}
+func (m *memStore) CreateNorthApp(ctx context.Context, n *NorthApp) error {
+	return m.SaveNorthApp(ctx, n)
 }
 func (m *memStore) DeleteNorthApp(ctx context.Context, id string) error {
 	delete(m.northApps, id)

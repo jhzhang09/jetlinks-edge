@@ -2,7 +2,7 @@
 
 # 启动 JetLinks Edge 容器，挂载数据卷。
 # 启动后访问：http://localhost:7001
-# 默认账号：admin / admin123（启动后请立即修改）
+# 默认账号：admin / admin123（如需生产加固可通过环境变量覆盖）
 services:
   jetlinks-edge:
     build: .
@@ -12,7 +12,14 @@ services:
     ports:
       - "7001:7001"
     volumes:
-      - ./data:/app/data
+      - jetlinks-edge-data:/app/data
+      - ./plugins:/app/plugins:ro
     environment:
-      JETLINKS_EDGE_WEB_JWT_SECRET: "change-me-in-production"
+      JETLINKS_EDGE_WEB_ADDR: "0.0.0.0:7001"
+      JETLINKS_EDGE_WEB_PRODUCTION: "false"
+      JETLINKS_EDGE_WEB_JWT_SECRET: "${JETLINKS_EDGE_JWT_SECRET:-jetlinks-edge-default-secret-change-me}"
+      JETLINKS_EDGE_WEB_DEFAULT_PASSWORD: "${JETLINKS_EDGE_ADMIN_PASSWORD:-admin123}"
       JETLINKS_EDGE_LOG_LEVEL: "info"
+
+volumes:
+  jetlinks-edge-data:

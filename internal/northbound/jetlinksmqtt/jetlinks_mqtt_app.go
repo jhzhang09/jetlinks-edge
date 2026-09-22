@@ -119,6 +119,13 @@ func NewApp(ctx context.Context, appID string, cfg core.NorthAppConfig) (core.No
 		defer a.lifecycleWG.Done()
 		a.gatewayPropertiesReportLoop(appCtx)
 	}()
+	a.lifecycleMu.Lock()
+	a.lifecycleWG.Add(1)
+	a.lifecycleMu.Unlock()
+	go func() {
+		defer a.lifecycleWG.Done()
+		a.authRefreshLoop(appCtx)
+	}()
 	return a, nil
 }
 
@@ -189,7 +196,7 @@ func Register(r *core.NorthRegistry) {
 	r.RegisterExtension(Descriptor(), NewApp)
 }
 
-// Descriptor 返回 JetLinks MQTT 编译期插件描述符。
+// Descriptor 返回 JetLinks MQTT 内置插件描述符。
 func Descriptor() core.ExtensionDescriptor {
 	return core.ExtensionDescriptor{
 		Type:         DriverName,
@@ -300,6 +307,7 @@ type app struct {
 
 	reconnectMu  sync.Mutex
 	reconnecting bool
+	connectMu    sync.Mutex
 	lifecycleMu  sync.Mutex
 	lifecycleWG  sync.WaitGroup
 	closing      bool
@@ -348,8 +356,9 @@ func (a *app) RegisterGroup(g *core.Group) bool {
 	a.mu.Lock()
 	old, exists := a.groups[key]
 	if exists && old.ID == g.ID {
+		a.groups[key] = g
 		a.mu.Unlock()
-		return true // 已注册过
+		return true // 更新运行时快照，不重复增加订阅引用计数
 	}
 	a.groups[key] = g
 	a.deviceSubs[key]++
@@ -395,17 +404,23 @@ func (a *app) DeregisterGroup(g *core.Group) {
 // 传入子设备的 productId/deviceId；网关身份从 a.cfg 取。
 // 在锁外调用，避免网络阻塞全局互斥锁。
 func (a *app) subscribeDevice(productID, deviceID string) {
+	a.mu.RLock()
+	client := a.client
+	a.mu.RUnlock()
+	a.subscribeDeviceWithClient(productID, deviceID, client)
+}
+
+func (a *app) subscribeDeviceWithClient(productID, deviceID string, client mqtt.Client) {
 	key := deviceKey(productID, deviceID)
 	a.subMu.Lock()
 	defer a.subMu.Unlock()
 
 	a.mu.RLock()
-	if a.deviceSubs[key] <= 0 {
-		a.mu.RUnlock()
+	subscribed := a.deviceSubs[key] > 0
+	a.mu.RUnlock()
+	if !subscribed {
 		return
 	}
-	client := a.client
-	a.mu.RUnlock()
 	if client == nil || !client.IsConnected() {
 		// OnConnect 会统一订阅，断线期间无需重复堆积请求。
 		return
@@ -472,24 +487,33 @@ func (a *app) buildOptions() *mqtt.ClientOptions {
 }
 
 func (a *app) connectWithTimeout(timeout time.Duration) bool {
+	a.connectMu.Lock()
+	defer a.connectMu.Unlock()
+
 	opts := a.buildOptions()
-	a.mu.Lock()
-	a.client = mqtt.NewClient(opts)
-	client := a.client
-	a.mu.Unlock()
+	client := mqtt.NewClient(opts)
 
 	token := client.Connect()
 	if !token.WaitTimeout(timeout) {
+		client.Disconnect(0)
 		zap.L().Warn("jetlinks mqtt connect timeout, will retry in background",
 			zap.String("broker", a.cfg.Broker),
 			zap.Duration("timeout", timeout))
 		return false
 	}
 	if err := token.Error(); err != nil {
+		client.Disconnect(0)
 		zap.L().Warn("jetlinks mqtt initial connect failed, will retry in background",
 			zap.String("broker", a.cfg.Broker),
 			zap.Error(err))
 		return false
+	}
+	a.mu.Lock()
+	old := a.client
+	a.client = client
+	a.mu.Unlock()
+	if old != nil && old != client {
+		old.Disconnect(250)
 	}
 	zap.L().Info("jetlinks mqtt connected",
 		zap.String("broker", a.cfg.Broker),
@@ -514,7 +538,7 @@ func (a *app) onConnect(c mqtt.Client) {
 
 	// 重新订阅所有已注册子设备
 	for _, g := range groups {
-		a.subscribeDevice(g.Device.ProductID, g.Device.DeviceID)
+		a.subscribeDeviceWithClient(g.Device.ProductID, g.Device.DeviceID, c)
 	}
 	// 为每个子设备 publish register + online
 	if a.cfg.ProductID != "" && a.cfg.DeviceID != "" {
@@ -567,6 +591,27 @@ func (a *app) onConnect(c mqtt.Client) {
 				zap.String("gwDeviceId", a.cfg.DeviceID),
 				zap.String("childProductId", g.Device.ProductID),
 				zap.String("childDeviceId", g.Device.DeviceID))
+		}
+	}
+}
+
+// authRefreshLoop 在认证时间戳达到一半有效期时平滑建立新连接，
+// 成功后才替换旧客户端，避免长连接在下一次断线时携带过期认证信息。
+func (a *app) authRefreshLoop(ctx context.Context) {
+	interval := time.Duration(a.cfg.TimestampDelta) * time.Second / 2
+	if interval < 30*time.Second {
+		interval = 30 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !a.connectWithTimeout(12 * time.Second) {
+				a.startReconnectLoop()
+			}
 		}
 	}
 }

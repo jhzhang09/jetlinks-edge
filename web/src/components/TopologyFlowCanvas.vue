@@ -73,62 +73,72 @@ function draw() {
 
     const startX = from.right
     const endX = to.left
-    const gap = Math.max(28, Math.min(90, (endX - startX) * .42))
-
-    context.strokeStyle = color
-    context.shadowColor = color
+    const gap = Math.max(18, Math.min(60, (endX - startX) * .42))
 
     if (!link.status) {
-      // 1. 静态从属连线：加粗为 2.0px，对比清晰，无阴影
-      context.lineWidth = 2.0
+      // 1. 静态归属连线：精致虚线 + 端部圆点（表达能力规范/从属关系，无数据流动感）
+      const attrColor = isLight ? 'rgba(100, 116, 139, 0.65)' : 'rgba(148, 163, 184, 0.45)'
+      context.strokeStyle = attrColor
+      context.fillStyle = attrColor
       context.shadowBlur = 0
-      context.globalAlpha = isLight ? 0.9 : 0.82
+      context.lineWidth = 1.6
+      context.globalAlpha = 1
+      context.setLineDash([4, 4])
       context.beginPath()
       context.moveTo(startX, from.y)
       context.bezierCurveTo(startX + gap, from.y, endX - gap, to.y, endX, to.y)
       context.stroke()
-    } else if (link.status === 'healthy') {
-      // 2. 健康传输通道：动态向右流光效果 (双层叠加：一层半透明实线底色 + 一层流动虚线)
-      // 底色细实线
-      context.lineWidth = 2.0
-      context.shadowBlur = isLight ? 0 : 4
-      context.globalAlpha = isLight ? 0.45 : 0.35
-      context.beginPath()
-      context.moveTo(startX, from.y)
-      context.bezierCurveTo(startX + gap, from.y, endX - gap, to.y, endX, to.y)
-      context.stroke()
+      context.setLineDash([]) // 重置虚线
 
-      // 流动虚线
-      context.lineWidth = 3.2 // 明显加粗流光
-      context.shadowBlur = isLight ? 0 : 8
-      context.globalAlpha = isLight ? 0.95 : 0.88
-      context.setLineDash([7, 6])
-      context.lineDashOffset = -flowOffset // 负数实现向右流动
-      context.stroke()
-      context.setLineDash([]) // 恢复实线
+      // 归属端部使用小圆点锚点替代箭头，去除流动误解
+      context.beginPath()
+      context.arc(endX, to.y, 3.2, 0, Math.PI * 2)
+      context.fill()
     } else {
-      // 3. 故障/警告传输通道：动态高频呼吸闪烁警示
-      context.lineWidth = 3.5 // 明显加粗
-      context.shadowBlur = isLight ? 0 : 10
-      context.globalAlpha = Math.max(0.35, pulseOpacity)
-      context.beginPath()
-      context.moveTo(startX, from.y)
-      context.bezierCurveTo(startX + gap, from.y, endX - gap, to.y, endX, to.y)
-      context.stroke()
-    }
+      // 2. 实时流转链路 (健康/警告/异常)：动态流光与方向箭头
+      context.strokeStyle = color
+      context.fillStyle = color
+      context.shadowColor = color
 
-    // 绘制端部箭头 (颜色和透明度与连线同步)
-    context.globalAlpha = !link.status 
-      ? (isLight ? 0.9 : 0.82) 
-      : (link.status === 'healthy' ? (isLight ? 0.95 : 0.88) : Math.max(0.35, pulseOpacity))
-    context.shadowBlur = 0
-    context.fillStyle = color
-    context.beginPath()
-    context.moveTo(endX, to.y)
-    context.lineTo(endX - 9, to.y - 5.5)
-    context.lineTo(endX - 9, to.y + 5.5)
-    context.closePath()
-    context.fill()
+      if (link.status === 'healthy') {
+        // 健康通道：半透明底层实线 + 流动高亮虚线
+        context.lineWidth = 2.0
+        context.shadowBlur = isLight ? 0 : 3
+        context.globalAlpha = isLight ? 0.4 : 0.3
+        context.beginPath()
+        context.moveTo(startX, from.y)
+        context.bezierCurveTo(startX + gap, from.y, endX - gap, to.y, endX, to.y)
+        context.stroke()
+
+        // 动态流光粒子
+        context.lineWidth = 2.8
+        context.shadowBlur = isLight ? 0 : 8
+        context.globalAlpha = isLight ? 0.95 : 0.9
+        context.setLineDash([6, 5])
+        context.lineDashOffset = -flowOffset
+        context.stroke()
+        context.setLineDash([])
+      } else {
+        // 故障/警告通道：高频呼吸警示
+        context.lineWidth = 3.2
+        context.shadowBlur = isLight ? 0 : 10
+        context.globalAlpha = Math.max(0.35, pulseOpacity)
+        context.beginPath()
+        context.moveTo(startX, from.y)
+        context.bezierCurveTo(startX + gap, from.y, endX - gap, to.y, endX, to.y)
+        context.stroke()
+      }
+
+      // 绘制实时流向端部三角形箭头
+      context.globalAlpha = link.status === 'healthy' ? (isLight ? 0.95 : 0.9) : Math.max(0.35, pulseOpacity)
+      context.shadowBlur = 0
+      context.beginPath()
+      context.moveTo(endX, to.y)
+      context.lineTo(endX - 8, to.y - 5)
+      context.lineTo(endX - 8, to.y + 5)
+      context.closePath()
+      context.fill()
+    }
   }
 }
 

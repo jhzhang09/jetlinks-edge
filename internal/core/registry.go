@@ -50,8 +50,19 @@ func (r *DriverRegistry) RegisterExtension(descriptor ExtensionDescriptor, facto
 func (r *DriverRegistry) RegisterLifecycleExtension(descriptor ExtensionDescriptor, factory DriverLifecycleFactory) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if descriptor.Runtime == "" {
+		descriptor.Runtime = "builtin"
+	}
 	r.factories[descriptor.Type] = factory
 	r.descriptors[descriptor.Type] = descriptor
+}
+
+// Unregister 删除指定类型的驱动工厂。已创建实例不受影响，由 Runner 负责生命周期收敛。
+func (r *DriverRegistry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.factories, name)
+	delete(r.descriptors, name)
 }
 
 // Names 返回所有已注册驱动名。

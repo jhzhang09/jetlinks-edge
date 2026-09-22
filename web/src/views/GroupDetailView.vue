@@ -366,7 +366,7 @@ const cols = computed(() => {
       </div>
     </section>
     <div class="ops-table-card">
-      <n-data-table :columns="cols" :data="tags" :bordered="false" :pagination="false" size="small" />
+      <n-data-table :columns="cols" :data="tags" :bordered="false" :pagination="false" size="small" :scroll-x="1100" />
     </div>
 
     <n-modal v-model:show="showCreate" class="ops-dialog" preset="dialog" :title="t('tags.add_title')" :positive-text="t('tags.add_btn')" :negative-text="t('tags.cancel')" @positive-click="onCreate">

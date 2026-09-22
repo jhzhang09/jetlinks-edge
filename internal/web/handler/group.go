@@ -13,7 +13,7 @@ import (
 	"github.com/jhzhang09/jetlinks-edge/internal/store"
 )
 
-// GroupHandler 点组管理。
+// GroupHandler 采集组管理。
 type GroupHandler struct {
 	runner *core.Runner
 	store  *store.Store
@@ -24,17 +24,20 @@ func NewGroupHandler(r *core.Runner, s *store.Store) *GroupHandler {
 	return &GroupHandler{runner: r, store: s}
 }
 
-// List 列出所有点组。
+// List 列出所有采集组。
 func (h *GroupHandler) List(c *gin.Context) {
 	gs, err := h.store.ListGroups(c.Request.Context())
 	if err != nil {
 		errResp(c, http.StatusInternalServerError, err)
 		return
 	}
+	for _, group := range gs {
+		redactGroupSecrets(group)
+	}
 	c.JSON(http.StatusOK, gin.H{"items": gs})
 }
 
-// Get 点组详情。
+// Get 采集组详情。
 func (h *GroupHandler) Get(c *gin.Context) {
 	id := c.Param("id")
 	g, err := h.store.GetGroup(c.Request.Context(), id)
@@ -46,10 +49,11 @@ func (h *GroupHandler) Get(c *gin.Context) {
 		errResp(c, http.StatusNotFound, errNotFound)
 		return
 	}
+	redactGroupSecrets(g)
 	c.JSON(http.StatusOK, g)
 }
 
-// Create 新建点组。
+// Create 新建采集组。
 func (h *GroupHandler) Create(c *gin.Context) {
 	var g core.Group
 	if err := c.ShouldBindJSON(&g); err != nil {
@@ -117,10 +121,11 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		}
 	}
 	h.store.PopulateGroupDriver(&g)
+	redactGroupSecrets(&g)
 	c.JSON(http.StatusOK, g)
 }
 
-// Update 更新点组。
+// Update 更新采集组。
 func (h *GroupHandler) Update(c *gin.Context) {
 	id := c.Param("id")
 	existing, err := h.store.GetGroup(c.Request.Context(), id)
@@ -138,6 +143,9 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		return
 	}
 	g.ID = id
+	if g.Device.SecureKey == core.MaskedSecret {
+		g.Device.SecureKey = existing.Device.SecureKey
+	}
 	if g.ConnectionID == "" {
 		errResp(c, http.StatusBadRequest, errMissingField("connectionId"))
 		return
@@ -187,10 +195,11 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		return
 	}
 	h.store.PopulateGroupDriver(&g)
+	redactGroupSecrets(&g)
 	c.JSON(http.StatusOK, g)
 }
 
-// Delete 删除点组。
+// Delete 删除采集组。
 func (h *GroupHandler) Delete(c *gin.Context) {
 	id := c.Param("id")
 	if err := h.store.DeleteGroup(c.Request.Context(), id); err != nil {
@@ -204,7 +213,7 @@ func (h *GroupHandler) Delete(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"id": id})
 }
 
-// Reload 手动触发点组热重启。
+// Reload 手动触发采集组热重启。
 func (h *GroupHandler) Reload(c *gin.Context) {
 	id := c.Param("id")
 	if err := h.runner.Reload(c.Request.Context(), id); err != nil {
@@ -231,6 +240,12 @@ var errNotFound = &simpleErr{msg: "not found"}
 type simpleErr struct{ msg string }
 
 func (e *simpleErr) Error() string { return e.msg }
+
+func redactGroupSecrets(group *core.Group) {
+	if group != nil && group.Device.SecureKey != "" {
+		group.Device.SecureKey = core.MaskedSecret
+	}
+}
 
 func (h *GroupHandler) isJetLinksGatewayRequired(ctx context.Context, northAppIDs string) (bool, error) {
 	if northAppIDs == "" {

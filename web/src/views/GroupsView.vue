@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, h } from 'vue'
 import { useRouter } from 'vue-router'
-import { NButton, NInput, NInputNumber, NSelect, NSwitch, NSpace, useMessage, useDialog, NDataTable, NModal, NForm, NFormItem, NP, NCheckbox } from 'naive-ui'
+import { NButton, NInput, NInputNumber, NSelect, NSwitch, NSpace, useMessage, useDialog, NDataTable, NModal, NForm, NFormItem, NP, NCheckbox, type DataTableColumns } from 'naive-ui'
 import {
   listGroups,
   listDriverExtensions,
@@ -265,16 +265,17 @@ const enabledCount = computed(() => groups.value.filter(item => item.enabled).le
 const connectedCount = computed(() => groups.value.filter(item => statusMap.value[item.id] === true).length)
 const linkedCount = computed(() => groups.value.filter(item => item.northAppId).length)
 
-const cols = [
-  { title: 'ID', key: 'id', width: 180, render: (g: Group) => h('code', { class: 'ops-mono', style: 'color:var(--amber);font-size:11px' }, g.id.slice(0, 12) + '…') },
-  { title: t('devices.col_name'), key: 'name' },
-  { title: t('devices.connection'), key: 'connectionId', width: 160, render: (g: Group) => h('span', { class: 'ops-tag cyan' }, connLabel(g.connectionId)) },
-  { title: t('devices.col_driver'), key: 'driver', width: 120, render: (g: Group) => h('span', { class: 'ops-tag amber' }, g.driver || '--') },
+const cols: DataTableColumns<Group> = [
+  { title: 'ID', key: 'id', width: 130, render: (g: Group) => h('code', { class: 'ops-mono', style: 'color:var(--amber);font-size:11px' }, g.id.slice(0, 10) + '…') },
+  { title: t('devices.col_name'), key: 'name', minWidth: 140, ellipsis: { tooltip: true }, render: (g: Group) => h('span', { style: 'font-weight:600;color:var(--text-strong);white-space:nowrap;' }, g.name) },
+  { title: t('devices.connection'), key: 'connectionId', width: 140, render: (g: Group) => h('span', { class: 'ops-tag cyan' }, connLabel(g.connectionId)) },
+  { title: t('devices.col_driver'), key: 'driver', width: 100, render: (g: Group) => h('span', { class: 'ops-tag amber' }, g.driver || '--') },
   { title: t('devices.col_interval'), key: 'intervalMs', width: 90, render: (g: Group) => h('code', { class: 'ops-mono', style: 'color:var(--cyan)' }, g.intervalMs + 'ms') },
   {
     title: t('devices.gateway'),
     key: 'northAppId',
-    width: 180,
+    minWidth: 150,
+    width: 170,
     render: (g: Group) => {
       if (!g.northAppId) {
         return h('span', { class: 'ops-tag dim' }, t('devices.gateway_none'))
@@ -283,7 +284,7 @@ const cols = [
       if (ids.length === 0) {
         return h('span', { class: 'ops-tag dim' }, t('devices.gateway_none'))
       }
-      return h(NSpace, { size: [4, 4], wrap: true }, () => ids.map(id => {
+      return h(NSpace, { size: [4, 4], wrap: true, style: 'white-space: normal;' }, () => ids.map(id => {
         const app = northApps.value.find(a => a.id === id)
         const name = app ? app.name : id.slice(0, 8)
         return h('span', { class: 'ops-tag cyan' }, name)
@@ -293,7 +294,7 @@ const cols = [
   {
     title: t('devices.col_status'),
     key: 'status',
-    width: 100,
+    width: 80,
     render: (g: Group) => {
       if (!g.enabled) return h('span', { class: 'ops-state dead' }, t('devices.status_off'))
       const c = statusMap.value[g.id] === true
@@ -303,8 +304,8 @@ const cols = [
   {
     title: t('devices.col_actions'),
     key: 'action',
-    width: 340,
-    render: (g: Group) => h(NSpace, {}, () => [
+    width: 260,
+    render: (g: Group) => h(NSpace, { size: 5, wrap: false }, () => [
       h(NButton, { class: 'ops-mini-button', size: 'small', type: 'info', onClick: () => router.push(`/groups/${g.id}`) }, () => t('devices.action_tags')),
       h(NButton, { class: 'ops-mini-button', size: 'small', onClick: () => openEdit(g.id) }, () => t('devices.action_edit')),
       h(NButton, { class: 'ops-mini-button', size: 'small', type: 'warning', onClick: () => onReload(g.id) }, () => t('devices.action_reload')),
@@ -336,7 +337,7 @@ const cols = [
       </div>
     </section>
     <div class="ops-table-card">
-      <n-data-table :columns="cols" :data="groups" :bordered="false" :pagination="false" size="small" />
+      <n-data-table :columns="cols" :data="groups" :bordered="false" :pagination="false" size="small" :scroll-x="1080" />
     </div>
 
     <!-- 新建 -->

@@ -21,11 +21,11 @@ var (
 	ErrTagReadOnly = errors.New("tag is read-only")
 )
 
-// Store 提供点组、点位、用户等数据的持久化访问。
+// Store 提供南向连接、采集组、点位和北向应用的持久化访问。
 //
 // 解耦于 *gorm.DB 的具体实现，便于后续切换到 PostgreSQL/MySQL。
 // 约定：
-//   - ListEnabledGroups: 列出所有启用的点组
+//   - ListEnabledGroups: 列出所有启用的采集组
 //   - SaveTagValue: 缓存点位最新值（可选落库）
 type Store interface {
 	ListEnabledGroups(ctx context.Context) ([]*Group, error)
@@ -40,6 +40,7 @@ type Store interface {
 	ListNorthApps(ctx context.Context) ([]*NorthApp, error)
 	ListEnabledNorthApps(ctx context.Context) ([]*NorthApp, error)
 	GetNorthApp(ctx context.Context, id string) (*NorthApp, error)
+	CreateNorthApp(ctx context.Context, n *NorthApp) error
 	SaveNorthApp(ctx context.Context, n *NorthApp) error
 	DeleteNorthApp(ctx context.Context, id string) error
 
@@ -50,12 +51,12 @@ type Store interface {
 }
 
 // Runner 是边缘网关运行时核心：
-//   - 加载所有 enabled 的点组
-//   - 为每个点组创建一个 goroutine，按 interval 周期采集
+//   - 加载所有 enabled 的采集组
+//   - 为每个采集组创建一个 goroutine，按 interval 周期采集
 //   - 把采集结果路由到对应的北向应用
-//   - 提供点组/点位的热加载（Reload）
+//   - 提供采集组/点位的热加载（Reload）
 //
-// 架构：北向应用（NorthApp）和南向点组（Group）解耦。
+// 架构：北向应用（NorthApp）和采集组（Group）解耦。
 //   - 启动时先初始化所有 enabled NorthApp（每个只创建一次）
 //   - 多个 Group 可共享同一个 NorthApp（共享 MQTT 连接等资源）
 //   - Group.northAppId 变化时只切换引用，不重建采集逻辑
@@ -75,7 +76,7 @@ type Runner struct {
 	groups      map[string]*groupRuntime
 	lastVals    map[string]map[string]TagValue // groupID -> tagName -> last value
 
-	// Connection 池：connID -> *connectionRuntime（物理通道实例）
+	// Connection 池：connID -> *connectionRuntime（南向连接实例）
 	connections map[string]*connectionRuntime
 
 	// NorthApp 池：appID -> *northAppRuntime（共享实例）
@@ -84,8 +85,8 @@ type Runner struct {
 	// eventBus 进程内消息事件总线
 	eventBus *EventBus
 
-	// bgCtx 是 Runner 内部的"长寿命"context，所有点组的 goroutine 都派生自它。
-	// 关键：不能用 Web handler 的 request context，否则 handler 返回后点组会被立即 cancel。
+	// bgCtx 是 Runner 内部的长寿命 context，所有采集组 goroutine 都派生自它。
+	// 不能使用 Web 请求 context，否则 handler 返回后采集组会被立即取消。
 	bgCtx    context.Context
 	bgCancel context.CancelFunc
 
@@ -104,6 +105,13 @@ func (r *Runner) EventBus() *EventBus {
 // EventBusDropped 返回进程内事件总线的累计丢弃数。
 func (r *Runner) EventBusDropped() uint64 {
 	return r.eventBus.Dropped()
+}
+
+// Ready 表示运行时已经启动且尚未进入停止状态。
+func (r *Runner) Ready() bool {
+	r.lifecycleMu.Lock()
+	defer r.lifecycleMu.Unlock()
+	return r.bgCancel != nil
 }
 
 // RunnerOptions 配置采集调度器的并发和超时边界。
@@ -126,14 +134,27 @@ type connectionRuntime struct {
 	conn   *Connection
 	driver DriverLifecycle
 	cancel context.CancelFunc
-	mu     sync.Mutex // 连接级互斥排他锁，防止并发 TCP 乱序或半双工串口冲突
+	ioOnce sync.Once
+	ioSem  chan struct{} // 连接级排他信号量，可被 context 取消且不会占用其他连接的全局并发槽
 }
 
-// groupRuntime 单个点组的运行时。
+func (c *connectionRuntime) acquire(ctx context.Context) error {
+	c.ioOnce.Do(func() { c.ioSem = make(chan struct{}, 1) })
+	select {
+	case c.ioSem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *connectionRuntime) release() { <-c.ioSem }
+
+// groupRuntime 单个采集组的运行时。
 type groupRuntime struct {
 	mu      sync.RWMutex
 	group   *Group
-	connRt  *connectionRuntime    // 关联的物理通道运行时
+	connRt  *connectionRuntime    // 关联的南向连接运行时
 	norths  []NorthMessageHandler // 引用 runner.northApps 中的共享实例（可能为空）
 	cancel  context.CancelFunc
 	unsub   func() // 进程内 EventBus 取消订阅闭包
@@ -210,7 +231,7 @@ func NewRunner(drivers *DriverRegistry, north *NorthRegistry, store Store, optio
 	}
 }
 
-// Start 初始化北向应用池 + 初始化物理通道连接 + 加载点组并启动所有协程。
+// Start 初始化北向应用池、南向连接和采集组运行时。
 func (r *Runner) Start(ctx context.Context) error {
 	bgCtx, cancel := context.WithCancel(context.Background())
 	r.bgCtx = bgCtx
@@ -227,7 +248,7 @@ func (r *Runner) Start(ctx context.Context) error {
 		return fmt.Errorf("init connections: %w", err)
 	}
 
-	// 3. 加载并启动点组
+	// 3. 加载并启动采集组
 	groups, err := r.store.ListEnabledGroups(ctx)
 	if err != nil {
 		r.Stop()
@@ -299,7 +320,7 @@ func (r *Runner) Stop() {
 	}
 }
 
-// initConnections 启动所有 enabled 的物理通道连接。
+// initConnections 启动所有 enabled 的南向连接。
 func (r *Runner) initConnections(ctx context.Context) error {
 	conns, err := r.store.ListEnabledConnections(ctx)
 	if err != nil {
@@ -316,7 +337,7 @@ func (r *Runner) initConnections(ctx context.Context) error {
 	return nil
 }
 
-// startConnection 实例化底层驱动并开启物理通道连接。
+// startConnection 实例化南向插件并开启南向连接。
 func (r *Runner) startConnection(ctx context.Context, conn *Connection) error {
 	if err := conn.UnmarshalConfig(); err != nil {
 		return err
@@ -341,8 +362,8 @@ func (r *Runner) startConnection(ctx context.Context, conn *Connection) error {
 	if err := driver.Connect(connCtx); err != nil {
 		// 热更新时优先保住仍然健康的旧连接，避免错误配置打断现有采集。
 		if old != nil && old.driver != nil && old.driver.Status().Connected {
-			cancel()
 			_ = driver.Disconnect()
+			cancel()
 			return fmt.Errorf("connect replacement for connection %s: %w", conn.ID, err)
 		}
 		zap.L().Warn("initial connection connect failed, it will automatically reconnect inside driver",
@@ -380,13 +401,15 @@ func closeConnection(connRt *connectionRuntime) {
 	if connRt == nil {
 		return
 	}
-	if connRt.cancel != nil {
-		connRt.cancel()
+	if err := connRt.acquire(context.Background()); err != nil {
+		return
 	}
-	connRt.mu.Lock()
-	defer connRt.mu.Unlock()
+	defer connRt.release()
 	if connRt.driver != nil {
 		_ = connRt.driver.Disconnect()
+	}
+	if connRt.cancel != nil {
+		connRt.cancel()
 	}
 }
 
@@ -431,12 +454,13 @@ func (r *Runner) startNorthApp(ctx context.Context, app *NorthApp) error {
 	old := r.northApps[app.ID]
 	r.mu.RUnlock()
 	if old != nil && northConnected(old.handler) && !northConnected(handler) {
-		cancel()
 		if lifecycle, ok := handler.(NorthLifecycle); ok {
 			_ = lifecycle.Close()
 		}
+		cancel()
 		return fmt.Errorf("replacement north app %s is not connected; keeping current instance", app.ID)
 	}
+	handler = newQueuedNorth(appCtx, handler)
 
 	r.mu.Lock()
 	groups := make([]*Group, 0)
@@ -542,11 +566,11 @@ func closeNorthApp(app *northAppRuntime) {
 	if app == nil {
 		return
 	}
-	if app.cancel != nil {
-		app.cancel()
-	}
 	if lifecycle, ok := app.handler.(NorthLifecycle); ok {
 		_ = lifecycle.Close()
+	}
+	if app.cancel != nil {
+		app.cancel()
 	}
 }
 
@@ -569,13 +593,26 @@ func (r *Runner) lookupNorthsLocked(appIDs string) []NorthMessageHandler {
 	return res
 }
 
-// Reload 重新加载某个点组（用于 Web API 触发的热更新）。
+// Reload 重新加载某个采集组（用于 Web API 触发的热更新）。
 //
 // 优化：当 productId/deviceId/northAppID 没有变化时，复用旧 group 在 north 的订阅
 // （避免 reload 时不必要的 Unsubscribe → Subscribe 往返）。
 func (r *Runner) Reload(ctx context.Context, groupID string) error {
 	r.lifecycleMu.Lock()
 	defer r.lifecycleMu.Unlock()
+
+	g, err := r.store.GetGroup(ctx, groupID)
+	if err != nil {
+		return err
+	}
+	var preparedConnection *connectionRuntime
+	if g != nil && g.Enabled {
+		preparedConnection, err = r.prepareGroup(ctx, g)
+		if err != nil {
+			return err
+		}
+	}
+
 	r.mu.Lock()
 	old, hadOld := r.groups[groupID]
 	if hadOld {
@@ -591,10 +628,6 @@ func (r *Runner) Reload(ctx context.Context, groupID string) error {
 		old.wg.Wait()
 	}
 
-	g, err := r.store.GetGroup(ctx, groupID)
-	if err != nil {
-		return err
-	}
 	if g == nil {
 		// 已删除：注销旧 group 的订阅
 		oldNorths := []NorthMessageHandler(nil)
@@ -668,10 +701,10 @@ func (r *Runner) Reload(ctx context.Context, groupID string) error {
 		delete(r.lastVals, groupID)
 		r.lastValsMu.Unlock()
 	}
-	return r.startGroup(r.bgCtx, g)
+	return r.startPreparedGroup(r.bgCtx, g, preparedConnection)
 }
 
-// ReloadConnection 重新加载单个物理通道连接（用于 Web API 触发的热更新）。
+// ReloadConnection 重新加载单个南向连接（用于 Web API 触发的热更新）。
 func (r *Runner) ReloadConnection(ctx context.Context, connID string) error {
 	r.lifecycleMu.Lock()
 	defer r.lifecycleMu.Unlock()
@@ -683,29 +716,129 @@ func (r *Runner) ReloadConnection(ctx context.Context, connID string) error {
 		return err
 	}
 
-	r.mu.Lock()
-	old, exists := r.connections[connID]
-	r.mu.Unlock()
-
 	if conn == nil || !conn.Enabled {
-		// 禁用或删除物理通道
-		if exists {
-			r.mu.Lock()
-			delete(r.connections, connID)
-			// 级联断开所有该通道下的 Group 引用
-			for _, gr := range r.groups {
-				if gr.group.ConnectionID == connID {
-					gr.setConnection(nil)
-				}
-			}
-			r.mu.Unlock()
-			closeConnection(old)
-		}
+		r.stopConnectionRuntime(connID)
 		return nil
 	}
 
-	// 重建物理通道连接
-	return r.startConnection(r.bgCtx, conn)
+	// 重建南向连接。已运行 Group 会在 startConnection 中切换引用；
+	// 之前因通道禁用而停止的 Group 在这里重新加载。
+	if err := r.startConnection(r.bgCtx, conn); err != nil {
+		return err
+	}
+	groups, err := r.store.ListEnabledGroups(ctx)
+	if err != nil {
+		return fmt.Errorf("list groups after connection reload: %w", err)
+	}
+	for _, group := range groups {
+		if group.ConnectionID != connID {
+			continue
+		}
+		r.mu.RLock()
+		_, running := r.groups[group.ID]
+		r.mu.RUnlock()
+		if !running {
+			if err := r.startGroup(r.bgCtx, group); err != nil {
+				return fmt.Errorf("restart group %s after connection reload: %w", group.ID, err)
+			}
+		}
+	}
+	return nil
+}
+
+// stopConnectionRuntime 停止一个连接及其依赖采集组，但保留数据库配置。
+// 用于连接禁用、删除和外部插件热卸载。
+func (r *Runner) stopConnectionRuntime(connID string) {
+	r.mu.Lock()
+	connection := r.connections[connID]
+	delete(r.connections, connID)
+	groups := make([]*groupRuntime, 0)
+	for groupID, gr := range r.groups {
+		if gr.group.ConnectionID != connID {
+			continue
+		}
+		delete(r.groups, groupID)
+		groups = append(groups, gr)
+	}
+	r.mu.Unlock()
+	for _, gr := range groups {
+		gr.cancel()
+		if gr.unsub != nil {
+			gr.unsub()
+		}
+	}
+	for _, gr := range groups {
+		gr.wg.Wait()
+		for _, north := range gr.northHandlers() {
+			if reg, ok := north.(northRegister); ok {
+				reg.DeregisterGroup(gr.group)
+			}
+		}
+		r.lastValsMu.Lock()
+		delete(r.lastVals, gr.group.ID)
+		r.lastValsMu.Unlock()
+	}
+	closeConnection(connection)
+}
+
+// ReconcileExtensionTypes 使外部插件注册表变化立即反映到现有运行时。
+// 移除的插件停止对应实例；新增或替换的插件重建对应连接和北向应用。
+func (r *Runner) ReconcileExtensionTypes(
+	ctx context.Context,
+	driverTypes, northTypes, removedDriverTypes, removedNorthTypes []string,
+) error {
+	removedDrivers := stringSet(removedDriverTypes)
+	removedNorth := stringSet(removedNorthTypes)
+	driverSet := stringSet(driverTypes)
+	northSet := stringSet(northTypes)
+
+	connections, err := r.store.ListEnabledConnections(ctx)
+	if err != nil {
+		return err
+	}
+	for _, connection := range connections {
+		if _, changed := driverSet[connection.Driver]; !changed {
+			continue
+		}
+		if _, removed := removedDrivers[connection.Driver]; removed {
+			r.lifecycleMu.Lock()
+			r.stopConnectionRuntime(connection.ID)
+			r.lifecycleMu.Unlock()
+			continue
+		}
+		if err := r.ReloadConnection(ctx, connection.ID); err != nil {
+			return fmt.Errorf("reload connection %s for plugin %s: %w", connection.ID, connection.Driver, err)
+		}
+	}
+
+	apps, err := r.store.ListEnabledNorthApps(ctx)
+	if err != nil {
+		return err
+	}
+	for _, app := range apps {
+		if _, changed := northSet[app.Type]; !changed {
+			continue
+		}
+		if _, removed := removedNorth[app.Type]; removed {
+			r.lifecycleMu.Lock()
+			err = r.deleteNorthApp(app.ID, false)
+			r.lifecycleMu.Unlock()
+		} else {
+			err = r.ReloadNorthApp(ctx, app.ID)
+		}
+		if err != nil {
+			return fmt.Errorf("reload north app %s for plugin %s: %w", app.ID, app.Type, err)
+		}
+	}
+	return nil
+}
+
+func stringSet(values []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		out[value] = struct{}{}
+	}
+	return out
 }
 
 // northRegister 可选接口：NorthApp 支持 RegisterGroup/DeregisterGroup 即可被多 Group 共享。
@@ -715,10 +848,20 @@ type northRegister interface {
 	DeregisterGroup(g *Group)
 }
 
-// startGroup 内部：寻找关联物理通道、引用共享北向应用、注册到 north（用于下行消息路由）、启动采集 goroutine。
+// startGroup 内部：寻找南向连接、引用共享北向应用、注册下行路由并启动采集 goroutine。
 func (r *Runner) startGroup(ctx context.Context, g *Group) error {
-	if err := g.UnmarshalConfig(); err != nil {
+	connRt, err := r.prepareGroup(ctx, g)
+	if err != nil {
 		return err
+	}
+	return r.startPreparedGroup(ctx, g, connRt)
+}
+
+// prepareGroup 在停止旧运行时前完成配置、连接和点位校验。
+// 热更新准备失败时，调用方可继续保留旧运行时，避免一次数据库或配置错误中断采集。
+func (r *Runner) prepareGroup(ctx context.Context, g *Group) (*connectionRuntime, error) {
+	if err := g.UnmarshalConfig(); err != nil {
+		return nil, err
 	}
 	g.Interval = time.Duration(g.IntervalMs) * time.Millisecond
 	if g.Interval <= 0 {
@@ -729,16 +872,19 @@ func (r *Runner) startGroup(ctx context.Context, g *Group) error {
 	connRt, connExists := r.connections[g.ConnectionID]
 	r.mu.RUnlock()
 	if !connExists || connRt == nil {
-		return fmt.Errorf("group %s references a non-running connection: %s", g.ID, g.ConnectionID)
+		return nil, fmt.Errorf("group %s references a non-running connection: %s", g.ID, g.ConnectionID)
 	}
 
 	// 加载点位
 	tags, err := r.store.ListTagsByGroup(ctx, g.ID)
 	if err != nil {
-		return fmt.Errorf("list tags: %w", err)
+		return nil, fmt.Errorf("list tags: %w", err)
 	}
 	g.Tags = toTagSlice(tags)
+	return connRt, nil
+}
 
+func (r *Runner) startPreparedGroup(ctx context.Context, g *Group, connRt *connectionRuntime) error {
 	grpCtx, cancel := context.WithCancel(ctx)
 	gr := &groupRuntime{
 		group:  g,
@@ -812,7 +958,7 @@ func (r *Runner) startGroup(ctx context.Context, g *Group) error {
 	return nil
 }
 
-// runGroup 单个点组的采集循环。
+// runGroup 单个采集组的采集循环。
 func (r *Runner) runGroup(ctx context.Context, gr *groupRuntime) {
 	g := gr.group
 	zap.L().Info("group collection started",
@@ -820,7 +966,7 @@ func (r *Runner) runGroup(ctx context.Context, gr *groupRuntime) {
 		zap.String("connectionId", g.ConnectionID),
 		zap.Duration("interval", g.Interval))
 
-	// 错峰启动，避免所有点组同时打设备
+	// 错峰启动，避免所有采集组同时访问设备
 	jitter := time.Duration(rand.Int63n(int64(g.Interval / 4)))
 	timer := time.NewTimer(jitter)
 	defer timer.Stop()
@@ -848,7 +994,9 @@ func (r *Runner) collectOnce(ctx context.Context, gr *groupRuntime) {
 	}
 
 	if len(g.Tags) == 0 {
-		connRt.mu.Lock()
+		if err := connRt.acquire(ctx); err != nil {
+			return
+		}
 		status := connRt.driver.Status()
 		if !status.Connected {
 			connCtx, connCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -858,10 +1006,23 @@ func (r *Runner) collectOnce(ctx context.Context, gr *groupRuntime) {
 				zap.L().Info("driver connected on tags-empty retry", zap.String("connectionId", connRt.conn.ID))
 			}
 		}
-		connRt.mu.Unlock()
+		connRt.release()
 		return
 	}
 
+	// 在局部快照中合并逻辑组配置，避免周期采集与主动读写并发修改共享 Config map。
+	tags := mergeGroupConfig(g.Tags, g.Config)
+	reader, ok := connRt.driver.(TagReader)
+	if !ok || !r.driverSupports(connRt, "polling") {
+		zap.L().Warn("group collect skipped: driver does not support polling",
+			zap.String("groupId", g.ID), zap.String("connectionId", connRt.conn.ID))
+		return
+	}
+	// 先等待本物理连接，再占用全局并发槽。慢连接上的大量采集组不会挤占其他连接的容量。
+	if err := connRt.acquire(ctx); err != nil {
+		return
+	}
+	defer connRt.release()
 	select {
 	case r.collectSem <- struct{}{}:
 		defer func() { <-r.collectSem }()
@@ -869,21 +1030,9 @@ func (r *Runner) collectOnce(ctx context.Context, gr *groupRuntime) {
 		return
 	}
 
-	// 在局部快照中合并逻辑组配置，避免周期采集与主动读写并发修改共享 Config map。
-	tags := mergeGroupConfig(g.Tags, g.Config)
-	reader, ok := connRt.driver.(TagReader)
-	if !ok {
-		zap.L().Warn("group collect skipped: driver does not support polling",
-			zap.String("groupId", g.ID), zap.String("connectionId", connRt.conn.ID))
-		return
-	}
-
 	readCtx, cancel := context.WithTimeout(ctx, r.readTimeout)
 
-	// 在物理通道排他锁保护下读取
-	connRt.mu.Lock()
 	values, err := reader.ReadTags(readCtx, tags)
-	connRt.mu.Unlock()
 
 	cancel()
 	if len(values) > len(tags) {
@@ -1015,11 +1164,21 @@ func (r *Runner) executeNorthCommand(ctx context.Context, cmd NorthCommand) (Nor
 		if !ok {
 			return NorthCommandReply{ID: cmd.ID, Code: 400, Message: "invalid properties"}, nil
 		}
-		for name, value := range properties {
+		names := make([]string, 0, len(properties))
+		for name := range properties {
 			tag, exists := findTagByName(target.group.Tags, name)
 			if !exists {
 				return NorthCommandReply{ID: cmd.ID, Code: 404, Message: "tag not found: " + name}, nil
 			}
+			if tag.Access == AccessRO {
+				return NorthCommandReply{ID: cmd.ID, Code: 403, Message: "tag is read-only: " + name}, nil
+			}
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			tag, _ := findTagByName(target.group.Tags, name)
+			value := properties[name]
 			if err := r.WriteTag(writeCtx, target.group.ID, tag.ID, value); err != nil {
 				return NorthCommandReply{ID: cmd.ID, Code: 500, Message: err.Error()}, nil
 			}
@@ -1035,14 +1194,16 @@ func (r *Runner) executeNorthCommand(ctx context.Context, cmd NorthCommand) (Nor
 			return NorthCommandReply{ID: cmd.ID, Code: 503, Message: "connection not running"}, nil
 		}
 		invoker, ok := connRt.driver.(FunctionInvoker)
-		if !ok {
+		if !ok || !r.driverSupports(connRt, "function") {
 			return NorthCommandReply{ID: cmd.ID, Code: 400, Message: "driver does not support function invocation"}, nil
 		}
 		invokeCtx, cancel := context.WithTimeout(ctx, r.writeTimeout)
 		defer cancel()
-		connRt.mu.Lock()
+		if err := connRt.acquire(invokeCtx); err != nil {
+			return NorthCommandReply{ID: cmd.ID, Code: 500, Message: err.Error()}, nil
+		}
 		output, err := invoker.InvokeFunction(invokeCtx, functionID, cmd.Payload["inputs"])
-		connRt.mu.Unlock()
+		connRt.release()
 		if err != nil {
 			return NorthCommandReply{ID: cmd.ID, Code: 500, Message: err.Error()}, nil
 		}
@@ -1112,7 +1273,7 @@ func (r *Runner) ReadTag(ctx context.Context, groupID, tagID string) (TagValue, 
 		return TagValue{}, errors.New("connection not running")
 	}
 	reader, ok := connRt.driver.(TagReader)
-	if !ok {
+	if !ok || !r.driverSupports(connRt, "read") {
 		return TagValue{}, errors.New("driver does not support tag reads")
 	}
 
@@ -1122,9 +1283,11 @@ func (r *Runner) ReadTag(ctx context.Context, groupID, tagID string) (TagValue, 
 				return TagValue{}, ErrTagWriteOnly
 			}
 
-			connRt.mu.Lock()
+			if err := connRt.acquire(ctx); err != nil {
+				return TagValue{}, err
+			}
 			values, err := reader.ReadTags(ctx, []Tag{t})
-			connRt.mu.Unlock()
+			connRt.release()
 
 			if err != nil {
 				return TagValue{Quality: QualityBad, Error: err.Error()}, err
@@ -1154,7 +1317,7 @@ func (r *Runner) WriteTag(ctx context.Context, groupID, tagID string, value inte
 		return errors.New("connection not running")
 	}
 	writer, ok := connRt.driver.(TagWriter)
-	if !ok {
+	if !ok || !r.driverSupports(connRt, "write") {
 		return errors.New("driver does not support tag writes")
 	}
 
@@ -1164,9 +1327,11 @@ func (r *Runner) WriteTag(ctx context.Context, groupID, tagID string, value inte
 				return ErrTagReadOnly
 			}
 
-			connRt.mu.Lock()
+			if err := connRt.acquire(ctx); err != nil {
+				return err
+			}
 			err := writer.WriteTag(ctx, t, value)
-			connRt.mu.Unlock()
+			connRt.release()
 
 			if err != nil {
 				return err
@@ -1177,7 +1342,7 @@ func (r *Runner) WriteTag(ctx context.Context, groupID, tagID string, value inte
 	return errors.New("tag not found")
 }
 
-// Status 返回所有点组的运行状态。
+// Status 返回所有采集组的运行状态。
 func (r *Runner) Status() map[string]DriverStatus {
 	r.mu.RLock()
 	connections := make(map[string]*connectionRuntime, len(r.groups))
@@ -1194,7 +1359,7 @@ func (r *Runner) Status() map[string]DriverStatus {
 	return out
 }
 
-// ConnectionStatus 返回所有物理通道的运行状态。
+// ConnectionStatus 返回所有南向连接的运行状态。
 func (r *Runner) ConnectionStatus() map[string]DriverStatus {
 	r.mu.RLock()
 	connections := make(map[string]*connectionRuntime, len(r.connections))
@@ -1211,7 +1376,7 @@ func (r *Runner) ConnectionStatus() map[string]DriverStatus {
 	return out
 }
 
-// groupStatus 返回单个点组对应南向驱动的实时状态。
+// groupStatus 返回单个采集组对应南向连接的实时状态。
 func (r *Runner) groupStatus(groupID string) (DriverStatus, bool) {
 	r.mu.RLock()
 	gr := r.groups[groupID]
@@ -1226,7 +1391,7 @@ func (r *Runner) groupStatus(groupID string) (DriverStatus, bool) {
 	return connRt.driver.Status(), true
 }
 
-// BrowseOPCUA 浏览指定 OPC UA 点组的节点树。
+// BrowseOPCUA 浏览指定 OPC UA 采集组的节点树。
 func (r *Runner) BrowseOPCUA(ctx context.Context, groupID string, nodeId string) ([]NodeItem, error) {
 	r.mu.RLock()
 	gr := r.groups[groupID]
@@ -1239,12 +1404,30 @@ func (r *Runner) BrowseOPCUA(ctx context.Context, groupID string, nodeId string)
 		return nil, errors.New("connection not running")
 	}
 	browser, ok := connRt.driver.(NodeBrowser)
-	if !ok {
+	if !ok || !r.driverSupports(connRt, "browse") {
 		return nil, fmt.Errorf("driver %s does not support browse", connRt.conn.Driver)
 	}
-	connRt.mu.Lock()
-	defer connRt.mu.Unlock()
+	if err := connRt.acquire(ctx); err != nil {
+		return nil, err
+	}
+	defer connRt.release()
 	return browser.Browse(ctx, nodeId)
+}
+
+func (r *Runner) driverSupports(connRt *connectionRuntime, capability string) bool {
+	if connRt == nil || connRt.conn == nil {
+		return false
+	}
+	descriptor, ok := r.drivers.Descriptor(connRt.conn.Driver)
+	if !ok || descriptor.Runtime != "external-process" {
+		return true
+	}
+	for _, current := range descriptor.Capabilities {
+		if current == capability {
+			return true
+		}
+	}
+	return false
 }
 
 // Drivers 返回所有已注册南向驱动名。
@@ -1274,6 +1457,24 @@ func (r *Runner) DefaultDriverConfig(name string, config map[string]interface{})
 	return ApplyConfigDefaults(descriptor.ConnectionSchema, config), nil
 }
 
+// MergeDriverSensitiveConfig 合并南向连接更新中未重新输入的密码字段。
+func (r *Runner) MergeDriverSensitiveConfig(name string, incoming, existing map[string]interface{}) (map[string]interface{}, error) {
+	descriptor, ok := r.drivers.Descriptor(name)
+	if !ok {
+		return nil, fmt.Errorf("driver not registered: %s", name)
+	}
+	return MergeSensitiveConfig(descriptor.ConnectionSchema, incoming, existing), nil
+}
+
+// RedactDriverConfig 隐藏南向连接配置中的密码字段。
+func (r *Runner) RedactDriverConfig(name string, config map[string]interface{}) (map[string]interface{}, error) {
+	descriptor, ok := r.drivers.Descriptor(name)
+	if !ok {
+		return nil, fmt.Errorf("driver not registered: %s", name)
+	}
+	return RedactSensitiveConfig(descriptor.ConnectionSchema, config), nil
+}
+
 // ValidateTagConfig 校验指定南向驱动的点位私有配置。
 func (r *Runner) ValidateTagConfig(name string, config map[string]interface{}) error {
 	descriptor, ok := r.drivers.Descriptor(name)
@@ -1292,7 +1493,7 @@ func (r *Runner) DefaultTagConfig(name string, config map[string]interface{}) (m
 	return ApplyConfigDefaults(descriptor.TagSchema, config), nil
 }
 
-// ValidateGroupConfig 校验指定南向驱动的逻辑点组配置。
+// ValidateGroupConfig 校验指定南向插件的采集组配置。
 func (r *Runner) ValidateGroupConfig(name string, config map[string]interface{}) error {
 	descriptor, ok := r.drivers.Descriptor(name)
 	if !ok {
@@ -1301,7 +1502,7 @@ func (r *Runner) ValidateGroupConfig(name string, config map[string]interface{})
 	return ValidateConfig(descriptor.ConfigSchema, config)
 }
 
-// DefaultGroupConfig 使用南向描述符默认值补齐逻辑点组配置。
+// DefaultGroupConfig 使用南向描述符默认值补齐采集组配置。
 func (r *Runner) DefaultGroupConfig(name string, config map[string]interface{}) (map[string]interface{}, error) {
 	descriptor, ok := r.drivers.Descriptor(name)
 	if !ok {
@@ -1387,6 +1588,9 @@ func (r *Runner) ListNorthAppStatus(ctx context.Context) ([]NorthAppStatus, erro
 			Running: running && nr != nil && nr.handler != nil,
 		}
 		if st.Running {
+			// NorthStateReporter 是可选能力；未实现时以“实例已运行”作为连通状态，
+			// 避免符合最小 NorthMessageHandler 契约的插件被错误标记为故障。
+			st.Connected = true
 			if stater, ok := nr.handler.(NorthStateReporter); ok {
 				s := stater.State()
 				if s != nil {
@@ -1401,7 +1605,7 @@ func (r *Runner) ListNorthAppStatus(ctx context.Context) ([]NorthAppStatus, erro
 	return out, nil
 }
 
-// GroupNames 返回当前在运行的所有点组 ID。
+// GroupNames 返回当前在运行的所有采集组 ID。
 func (r *Runner) GroupNames() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -1413,13 +1617,13 @@ func (r *Runner) GroupNames() []string {
 	return ids
 }
 
-// GroupInfo 返回在运行的点组 ID 与名称。
+// GroupInfo 返回在运行的采集组 ID 与名称。
 type GroupInfo struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }
 
-// GroupInfoList 返回当前所有运行中的点组 ID + 名称。
+// GroupInfoList 返回当前所有运行中的采集组 ID 和名称。
 func (r *Runner) GroupInfoList() []GroupInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -1431,7 +1635,7 @@ func (r *Runner) GroupInfoList() []GroupInfo {
 	return out
 }
 
-// LastValues 返回某个点组的最近一次采集值。
+// LastValues 返回某个采集组的最近一次采集值。
 func (r *Runner) LastValues(groupID string) map[string]TagValue {
 	r.lastValsMu.RLock()
 	defer r.lastValsMu.RUnlock()

@@ -15,6 +15,8 @@ web:
   #   - 留空 "" (推荐): 启用生产模式，直接使用嵌入到二进制包中的前端资源
   #   - 指定路径 (如 "web/dist"): 使用外部磁盘上的前端静态资源文件，便于本地开发调试
   static_dir: ""
+  # 反向代理部署时填写明确的代理 IP/CIDR；留空可防止伪造 X-Forwarded-For 绕过登录限流。
+  trusted_proxies: []
 
 log:
   level: info
@@ -32,3 +34,8 @@ collector:
   read_timeout: 3s
   write_timeout: 3s
   reconnect_delay: 5s
+
+plugins:
+  enabled: true
+  # 外部进程插件目录；相对路径按 config.yaml 所在目录解析。
+  directory: plugins

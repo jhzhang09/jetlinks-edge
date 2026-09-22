@@ -40,7 +40,7 @@ def main():
     tok = http("POST", "/auth/login", data={"username": "admin", "password": "admin123"})["token"]
     print(f"   token = {tok[:30]}...")
 
-    print("== 2. 验证编译期插件描述符 ==")
+    print("== 2. 验证插件描述符 ==")
     drivers = http("GET", "/extensions/drivers", token=tok)["items"]
     norths = http("GET", "/extensions/north-apps", token=tok)["items"]
     assert any(item["type"] == "modbus-tcp" and item["connectionSchema"] and item["tagSchema"] for item in drivers)
@@ -64,7 +64,16 @@ def main():
     })
     print(f"   id = {na['id']}")
 
-    print("== 4. 创建 3 个 Group（共享北向，不同设备身份） ==")
+    print("== 4. 创建南向连接 ==")
+    conn = http("POST", "/connections", token=tok, data={
+        "name": "e2e-modbus",
+        "driver": "modbus-tcp",
+        "enabled": True,
+        "config": {"host": "127.0.0.1", "port": 5020, "timeout": "3s", "idleTimeout": "60s"}
+    })
+    print(f"   id = {conn['id']}")
+
+    print("== 5. 创建 3 个采集组（共享南向连接和北向应用，不同设备身份） ==")
     gids = []
     devices = [
         ("plc-1", "test-product", "device-1"),
@@ -74,11 +83,11 @@ def main():
     for name, pid, did in devices:
         g = http("POST", "/groups", token=tok, data={
             "name": name,
-            "driver": "modbus-tcp",
+            "connectionId": conn["id"],
             "intervalMs": 500,
             "enabled": True,
             "northAppId": na["id"],
-            "config": {"host": "127.0.0.1", "port": 5020, "unitId": 1},
+            "config": {"unitId": 1},
             "device": {"productId": pid, "deviceId": did, "secureKey": ""}
         })
         gids.append(g["id"])
@@ -91,14 +100,14 @@ def main():
 
     time.sleep(2)
 
-    print("== 5. 读 3 个 Group 的实时值（应都为 100） ==")
+    print("== 6. 读 3 个采集组的实时值（应都为 100） ==")
     for gid in gids:
         g = http("GET", f"/groups/{gid}", token=tok)
         v = http("GET", f"/groups/{gid}/values", token=tok)
         for tid, vv in v.items():
             print(f"   {g['name']} ({g['device']['deviceId']}) {vv['name']} = {vv['value']} ({vv['quality']})")
 
-    print("== 6. 删除中间 Group (plc-2)，其他不受影响 ==")
+    print("== 7. 删除中间采集组 (plc-2)，其他不受影响 ==")
     http("DELETE", f"/groups/{gids[1]}", token=tok)
     time.sleep(0.5)
     # 剩余 2 个 Group 仍正常
@@ -108,20 +117,20 @@ def main():
         for tid, vv in v.items():
             print(f"   {g['name']} {vv['name']} = {vv['value']} ({vv['quality']})")
 
-    print("== 7. 删除北向应用，剩余 Group 自动解绑 ==")
+    print("== 8. 删除北向应用，剩余采集组自动解绑 ==")
     http("DELETE", f"/north-apps/{na['id']}", token=tok)
     for gid in [gids[0], gids[2]]:
         g = http("GET", f"/groups/{gid}", token=tok)
         assert g["northAppId"] == "", f"期望 northAppId='', 实际={g['northAppId']}"
         print(f"   {g['name']} northAppId = '' ✓")
 
-    print("== 8. 创建一个 Group 但不绑定北向（只采集不上送） ==")
+    print("== 9. 创建一个采集组但不绑定北向（只采集不上送） ==")
     g_only = http("POST", "/groups", token=tok, data={
         "name": "local-plc",
-        "driver": "modbus-tcp",
+        "connectionId": conn["id"],
         "intervalMs": 500,
         "enabled": True,
-        "config": {"host": "127.0.0.1", "port": 5020, "unitId": 1}
+        "config": {"unitId": 1}
         # 不传 northAppId 和 device
     })
     http("POST", f"/groups/{g_only['id']}/tags", token=tok, data={
@@ -136,7 +145,7 @@ def main():
     print("   ✓ 不绑定北向也能正常采集")
 
     print()
-    print("== ✓ 编译期插件与动态配置 E2E 验证通过 ==")
+    print("== ✓ 插件与动态配置 E2E 验证通过 ==")
     print()
     print("查看后端日志可看到多设备共享连接的细节：")
     print("  grep 'subscribed\\|unsubscribed' /tmp/edge.log")

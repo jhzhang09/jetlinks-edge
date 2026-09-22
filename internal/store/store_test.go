@@ -186,7 +186,7 @@ func TestStore(t *testing.T) {
 		t.Errorf("GetGroup returned unexpected result: %+v", gGet)
 	}
 
-	// 多北向绑定使用关系表持久化，旧字段只作 API 兼容层。
+	// 多北向绑定使用关系表作为唯一持久化事实，northAppId 只作 API 兼容视图。
 	g.NorthAppID = "north-1,north-2"
 	if err := s.SaveGroup(ctx, g); err != nil {
 		t.Fatalf("SaveGroup with multiple north apps failed: %v", err)
@@ -199,9 +199,6 @@ func TestStore(t *testing.T) {
 	}
 	if bindingCount != 2 {
 		t.Fatalf("binding count = %d, want 2", bindingCount)
-	}
-	if err := s.DB().Model(&core.Group{}).Where("id = ?", g.ID).Update("north_app_id", "").Error; err != nil {
-		t.Fatalf("clear legacy north_app_id failed: %v", err)
 	}
 	gFromBindings, err := s.GetGroup(ctx, g.ID)
 	if err != nil {
@@ -312,5 +309,35 @@ func TestStore(t *testing.T) {
 	}
 	if appNotFound != nil {
 		t.Error("expected nil for nonexistent NorthApp")
+	}
+}
+
+func TestMigrateLegacyNorthAppColumnToBindings(t *testing.T) {
+	s, err := New(config.StorageConfig{Driver: "sqlite", DSN: "file:legacy-binding-test?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Exec(`CREATE TABLE groups (id text PRIMARY KEY, name text, north_app_id text)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Exec(`INSERT INTO groups (id, name, north_app_id) VALUES (?, ?, ?)`, "legacy-group", "Legacy Group", "north-1,north-2").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	group, err := s.GetGroup(context.Background(), "legacy-group")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if group == nil || group.NorthAppID != "north-1,north-2" {
+		t.Fatalf("legacy bindings not migrated: %#v", group)
+	}
+	var count int64
+	if err := s.db.Model(&core.GroupNorthAppBinding{}).Where("group_id = ?", "legacy-group").Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("binding count = %d, want 2", count)
 	}
 }

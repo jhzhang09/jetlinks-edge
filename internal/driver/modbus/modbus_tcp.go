@@ -78,7 +78,7 @@ func Register(r *core.DriverRegistry) {
 	r.RegisterExtension(Descriptor(), NewDriver)
 }
 
-// Descriptor 返回 Modbus TCP 编译期插件描述符。
+// Descriptor 返回 Modbus TCP 内置插件描述符。
 func Descriptor() core.ExtensionDescriptor {
 	return core.ExtensionDescriptor{
 		Type:         DriverName,

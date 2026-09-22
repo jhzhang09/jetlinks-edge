@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, h } from 'vue'
-import { NSpace, useMessage, useDialog, NButton, NInput, NSwitch, NSelect, NTooltip } from 'naive-ui'
+import { NSpace, useMessage, useDialog, NButton, NInput, NSwitch, NSelect, NTooltip, type DataTableColumns } from 'naive-ui'
 import { listNorthApps, listNorthExtensions, createNorthApp, updateNorthApp, deleteNorthApp, reloadNorthApp, configDefaults, type ExtensionDescriptor, type NorthApp, type NorthAppStatus } from '@/api'
 import { useI18n } from '@/i18n'
 import DynamicConfigForm from '@/components/DynamicConfigForm.vue'
@@ -105,12 +105,12 @@ async function onReload(id: string) {
   }
 }
 
-const cols = [
-  { title: t('gw.col_id'), key: 'id', width: 180, render: (a: NorthAppStatus) => h('code', { class:'ops-mono', style: 'color:var(--amber);font-size:11px' }, a.id.slice(0,12)+'…') },
-  { title: t('gw.col_name'), key: 'name' },
-  { title: t('gw.col_type'), key: 'type', width: 180, render: (a: NorthAppStatus) => h('span', { class: 'ops-tag cyan' }, t(descriptorFor(a.type)?.name || a.type)) },
+const cols: DataTableColumns<NorthAppStatus> = [
+  { title: t('gw.col_id'), key: 'id', width: 150, render: (a: NorthAppStatus) => h('code', { class:'ops-mono', style: 'color:var(--amber);font-size:11px' }, a.id.slice(0,12)+'…') },
+  { title: t('gw.col_name'), key: 'name', minWidth: 160, ellipsis: { tooltip: true }, render: (a: NorthAppStatus) => h('span', { style: 'font-weight:600;color:var(--text-strong);white-space:nowrap;' }, a.name) },
+  { title: t('gw.col_type'), key: 'type', width: 220, render: (a: NorthAppStatus) => h('span', { class: 'ops-tag cyan' }, t(descriptorFor(a.type)?.name || a.type)) },
   {
-    title: t('gw.col_state'), key: 'running', width: 100,
+    title: t('gw.col_state'), key: 'running', width: 110,
     render: (a: NorthAppStatus) => {
       if (!a.enabled) return h('span', { class: 'ops-state dead' }, t('gw.state_off'))
       if (a.connected) return h('span', { class: 'ops-state live' }, t('gw.state_online'))
@@ -125,8 +125,8 @@ const cols = [
     }
   },
   { title: t('gw.col_enabled'), key: 'enabled', width: 80, render: (a: NorthAppStatus) => h('span', { class: 'ops-tag '+(a.enabled?'cyan':'dim') }, t(a.enabled?'gw.enabled_yes':'gw.enabled_no')) },
-  { title: t('gw.col_actions'), key: 'action', width: 260,
-    render: (a: NorthAppStatus) => h(NSpace, {}, () => [
+  { title: t('gw.col_actions'), key: 'action', width: 200,
+    render: (a: NorthAppStatus) => h(NSpace, { size: 6, wrap: false }, () => [
       h(NButton, { class:'ops-mini-button', size: 'small', onClick: () => openEdit(a.id) }, () => t('gw.action_edit')),
       h(NButton, { class:'ops-mini-button', size: 'small', type: 'warning', onClick: () => onReload(a.id) }, () => t('gw.action_reload')),
       h(NButton, { class:'ops-mini-button', size: 'small', type: 'error', onClick: () => onDelete(a.id) }, () => t('gw.action_del'))
@@ -158,7 +158,7 @@ const cols = [
     </section>
 
     <div class="ops-table-card">
-      <n-data-table :columns="cols" :data="apps" :bordered="false" :pagination="false" size="small" />
+      <n-data-table :columns="cols" :data="apps" :bordered="false" :pagination="false" size="small" :scroll-x="960" />
     </div>
 
     <n-modal v-model:show="showForm" class="ops-dialog" preset="dialog" :title="t(editing?'gw.edit_title':'gw.register_title')" :positive-text="t('gw.save')" :negative-text="t('gw.cancel')" @positive-click="onSubmit">

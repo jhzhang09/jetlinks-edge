@@ -41,12 +41,14 @@ type ConfigField struct {
 	Options      []ConfigOption  `json:"options,omitempty"`
 }
 
-// ExtensionDescriptor 描述一个编译期插件及其动态配置能力。
+// ExtensionDescriptor 描述内置或外部插件及其动态配置能力。
 type ExtensionDescriptor struct {
 	Type             string        `json:"type"`
 	Name             string        `json:"name"`
 	Description      string        `json:"description,omitempty"`
 	Version          string        `json:"version"`
+	Runtime          string        `json:"runtime,omitempty"` // builtin / external-process
+	ProtocolVersion  string        `json:"protocolVersion,omitempty"`
 	Capabilities     []string      `json:"capabilities,omitempty"`
 	ConnectionSchema []ConfigField `json:"connectionSchema,omitempty"`
 	TagSchema        []ConfigField `json:"tagSchema,omitempty"`

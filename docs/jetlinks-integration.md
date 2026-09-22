@@ -5,7 +5,7 @@
 JetLinks 平台内置 MQTT Broker（默认端口 11883，可改 1883）。**JetLinks Edge 采用"网关 + 子设备"模式接入**：
 
 - **网关** = 1 个 MQTT 连接 = 1 个 NorthApp 配置实体
-- **子设备** = 1 个点组 = 平台上的 1 个 deviceId
+- **子设备** = 1 个采集组 = 平台上的 1 个 deviceId
 - 多个子设备共享同一条 MQTT 连接，平台从消息 topic `/{gwProductId}/{gwDeviceId}/child/{childDeviceId}/...` 识别子设备身份
 - 子设备**不需要**自己的 broker 凭据（无 MD5 密码计算），平台根据网关级凭据完成认证
 
@@ -183,7 +183,7 @@ mosquitto_sub -h broker_host -p 1883 \
 ## 异常处理
 
 - **平台 broker 未启动 / 网络断开**：paho mqtt 客户端**后台持续重连**（最长 30s 间隔），期间采集正常进行但上送会被忽略；broker 恢复后会遍历当前 Group 自动恢复订阅。
-- **Modbus 设备断开**：点组状态变 `disconnected`，采集循环继续但所有值标记为 `bad`。
+- **Modbus 设备断开**：采集组状态变为 `disconnected`，采集循环继续，但所有值标记为 `bad`。
 - **Modbus 异常响应**（Illegal Data Address 等）：该 Tag 单次标记为 `bad`，不影响其他 Tag。
 - **NorthApp 配置错误**（broker 地址错、账号错）：API 创建时**不阻塞**（短超时 3s + 后台重试），Web 状态显示 `running=true` 但实际未连上；日志会有警告。修改 NorthApp 后会自动重启实例（所有 Group 重新订阅）。
 - **Group 停用 / 删除**：从 NorthApp 注销，**最后一个引用某设备的 Group 停止时**才 Unsubscribe（refCount 跟踪），节省 broker 资源。

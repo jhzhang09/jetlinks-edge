@@ -47,3 +47,18 @@ func TestValidateRejectsDefaultCredentialsInProduction(t *testing.T) {
 		t.Fatalf("unexpected production config error: %v", err)
 	}
 }
+
+func TestValidateTrustedProxies(t *testing.T) {
+	cfg := &Config{
+		Web:       WebConfig{Addr: "0.0.0.0:7001", JWTSecret: "secret", DefaultPassword: "secret", TokenTTL: time.Hour, TrustedProxies: []string{"not-a-network"}},
+		Storage:   StorageConfig{DSN: "edge.db"},
+		Collector: CollectorConfig{MaxConcurrency: 1, ReadTimeout: time.Second, WriteTimeout: time.Second, ReconnectDelay: time.Second},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid trusted proxy to be rejected")
+	}
+	cfg.Web.TrustedProxies = []string{"127.0.0.1", "10.0.0.0/8"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid trusted proxies rejected: %v", err)
+	}
+}

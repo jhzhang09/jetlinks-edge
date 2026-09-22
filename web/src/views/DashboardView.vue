@@ -53,7 +53,7 @@ function getPluginStyle(type: string) {
       <section class="ops-panel trend-panel">
         <header class="ops-panel-header"><h2 class="ops-panel-title">{{ t('dash.health_trend') }}</h2><span class="ops-panel-meta">{{ t('dash.realtime_snapshot') }}</span></header>
         <div class="legend"><span class="good">{{ t('dash.legend_health') }}</span><span class="warn">{{ t('dash.legend_warn') }}</span><span class="bad">{{ t('dash.legend_bad') }}</span></div>
-        <div class="chart"><OpsTrendChart :healthy="history.healthy" :warning="history.warning" :critical="history.critical" /></div>
+        <div class="chart"><OpsTrendChart :healthy="history.healthy" :warning="history.warning" :critical="history.critical" :timestamps="history.timestamps" /></div>
       </section>
       <section class="ops-panel active-alarms">
         <header class="ops-panel-header"><h2 class="ops-panel-title">{{ t('dash.active_alarms_count') }} <b>{{ data.alarms.length }}</b></h2><button @click="router.push('/alarms')">{{ t('log.view_all') }}</button></header>
@@ -68,7 +68,7 @@ function getPluginStyle(type: string) {
       </header>
       <div class="ops-panel-body plugins-body">
         <div class="plugin-section">
-          <h3 class="plugin-section-title">{{ t('dash.south_drivers') }} <small>Southbound Drivers</small></h3>
+		  <h3 class="plugin-section-title">{{ t('dash.south_drivers') }} <small>Southbound Plugins</small></h3>
           <div class="plugin-grid">
             <div v-for="plugin in data.driverPlugins" :key="plugin.type" class="plugin-card">
               <div class="plugin-card-icon">
@@ -82,9 +82,10 @@ function getPluginStyle(type: string) {
                   <span class="plugin-version">v{{ plugin.version }}</span>
                 </div>
                 <p class="plugin-desc" :title="plugin.description">{{ plugin.description || t('dash.no_desc') }}</p>
-                <div class="plugin-tags">
-                  <span class="plugin-type-tag">{{ plugin.type }}</span>
-                  <span v-for="cap in plugin.capabilities || []" :key="cap" class="plugin-cap-tag">{{ cap }}</span>
+			  <div class="plugin-tags">
+				<span class="plugin-type-tag">{{ plugin.type }}</span>
+				<span class="plugin-cap-tag">{{ t(plugin.runtime === 'external-process' ? 'plugins.runtime_external' : 'plugins.runtime_builtin') }}</span>
+				<span v-for="cap in plugin.capabilities || []" :key="cap" class="plugin-cap-tag">{{ cap }}</span>
                 </div>
               </div>
             </div>
@@ -93,7 +94,7 @@ function getPluginStyle(type: string) {
         </div>
 
         <div class="plugin-section">
-          <h3 class="plugin-section-title">{{ t('dash.north_channels') }} <small>Northbound Channels</small></h3>
+		  <h3 class="plugin-section-title">{{ t('dash.north_channels') }} <small>Northbound Plugins</small></h3>
           <div class="plugin-grid">
             <div v-for="plugin in data.northPlugins" :key="plugin.type" class="plugin-card">
               <div class="plugin-card-icon">
@@ -107,9 +108,10 @@ function getPluginStyle(type: string) {
                   <span class="plugin-version">v{{ plugin.version }}</span>
                 </div>
                 <p class="plugin-desc" :title="plugin.description">{{ plugin.description || t('dash.no_desc') }}</p>
-                <div class="plugin-tags">
-                  <span class="plugin-type-tag">{{ plugin.type }}</span>
-                  <span v-for="cap in plugin.capabilities || []" :key="cap" class="plugin-cap-tag">{{ cap }}</span>
+			  <div class="plugin-tags">
+				<span class="plugin-type-tag">{{ plugin.type }}</span>
+				<span class="plugin-cap-tag">{{ t(plugin.runtime === 'external-process' ? 'plugins.runtime_external' : 'plugins.runtime_builtin') }}</span>
+				<span v-for="cap in plugin.capabilities || []" :key="cap" class="plugin-cap-tag">{{ cap }}</span>
                 </div>
               </div>
             </div>

@@ -109,7 +109,7 @@ func Descriptor() core.ExtensionDescriptor {
 	return core.ExtensionDescriptor{
 		Type:         DriverName,
 		Name:         "Generic MQTT",
-		Description:  "将采集数据上送到通用的 MQTT Broker（支持按点组/应用自定义主题，并支持下行控制）",
+		Description:  "将采集数据上送到通用 MQTT Broker（支持按采集组和北向应用自定义主题及下行控制）",
 		Version:      "1.0.0",
 		Capabilities: []string{"report", "write-command", "shared-connection"},
 		ConfigSchema: []core.ConfigField{
@@ -175,8 +175,12 @@ func (a *app) connectWithTimeout(timeout time.Duration) bool {
 	token := client.Connect()
 	if token.WaitTimeout(timeout) && token.Error() == nil {
 		a.mu.Lock()
+		old := a.client
 		a.client = client
 		a.mu.Unlock()
+		if old != nil && old != client {
+			old.Disconnect(250)
+		}
 		zap.L().Info("generic-mqtt: connected successfully", zap.String("appId", a.appID), zap.String("broker", a.cfg.Broker))
 		return true
 	}
@@ -184,6 +188,7 @@ func (a *app) connectWithTimeout(timeout time.Duration) bool {
 	if err == nil {
 		err = errors.New("connection timeout")
 	}
+	client.Disconnect(0)
 	zap.L().Warn("generic-mqtt: failed to connect", zap.String("appId", a.appID), zap.Error(err))
 	return false
 }

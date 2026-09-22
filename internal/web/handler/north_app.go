@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 
@@ -86,14 +85,7 @@ func (h *NorthAppHandler) Create(c *gin.Context) {
 		errResp(c, http.StatusBadRequest, err)
 		return
 	}
-	creator, ok := h.runner.Store().(interface {
-		CreateNorthApp(context.Context, *core.NorthApp) error
-	})
-	if !ok {
-		errResp(c, http.StatusInternalServerError, &simpleErr{msg: "store does not support atomic north app creation"})
-		return
-	}
-	if err := creator.CreateNorthApp(c.Request.Context(), &n); err != nil {
+	if err := h.runner.Store().CreateNorthApp(c.Request.Context(), &n); err != nil {
 		errResp(c, http.StatusInternalServerError, err)
 		return
 	}
@@ -158,7 +150,11 @@ func (h *NorthAppHandler) Update(c *gin.Context) {
 	}
 	// 重建实例（已存在的 Group 会自动引用新实例）
 	if err := h.runner.ReloadNorthApp(c.Request.Context(), id); err != nil {
-		if rollbackErr := h.runner.Store().SaveNorthApp(c.Request.Context(), existing); rollbackErr != nil {
+		rollbackErr := h.runner.Store().SaveNorthApp(c.Request.Context(), existing)
+		if rollbackErr == nil {
+			rollbackErr = h.runner.ReloadNorthApp(c.Request.Context(), id)
+		}
+		if rollbackErr != nil {
 			err = fmt.Errorf("apply north app update: %w; rollback failed: %v", err, rollbackErr)
 		}
 		errResp(c, http.StatusInternalServerError, err)

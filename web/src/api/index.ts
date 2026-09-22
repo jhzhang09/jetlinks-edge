@@ -41,10 +41,34 @@ export interface ExtensionDescriptor {
   name: string
   description?: string
   version: string
+	  runtime?: 'builtin' | 'external-process'
+	  protocolVersion?: string
   capabilities?: string[]
   connectionSchema?: ConfigField[]
   tagSchema?: ConfigField[]
   configSchema?: ConfigField[]
+}
+
+export interface ExternalPlugin {
+  kind: 'driver' | 'north'
+  manifest: string
+  command: string
+  descriptor: ExtensionDescriptor
+}
+
+export interface PluginChangeSet {
+  driverTypes: string[]
+  northTypes: string[]
+  removedDriverTypes: string[]
+  removedNorthTypes: string[]
+}
+
+export function listExternalPlugins() {
+  return http.get('/plugins').then((r: any) => r.data as { directory: string; items: ExternalPlugin[] })
+}
+
+export function reloadExternalPlugins() {
+  return http.post('/plugins/reload').then((r: any) => r.data as { changes: PluginChangeSet; items: ExternalPlugin[] })
 }
 export function listDriverExtensions() {
   return http.get('/extensions/drivers').then((r: any) => r.data as { items: ExtensionDescriptor[] })

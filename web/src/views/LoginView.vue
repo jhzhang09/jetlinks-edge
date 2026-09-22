@@ -4,13 +4,14 @@ import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useI18n } from '@/i18n'
 
-const { t, lang, toggleLang, setLang } = useI18n()
+const { t, lang, setLang } = useI18n()
 const auth = useAuthStore()
 const router = useRouter()
 const route = useRoute()
 
 const username = ref('admin')
 const password = ref('admin123')
+const nodeEndpoint = `edge://${window.location.host}`
 const loading = ref(false)
 const failed = ref('')
 
@@ -35,7 +36,7 @@ async function onSubmit() {
     <div class="scanline"></div>
     <div class="login-panel">
       <div class="lang-switch">
-        <button :class="{ active: lang === 'zh' }" @click="toggleLang">中</button>
+		<button :class="{ active: lang === 'zh' }" @click="setLang('zh')">中</button>
         <span>/</span>
         <button :class="{ active: lang === 'en' }" @click="setLang('en')">EN</button>
       </div>
@@ -49,11 +50,11 @@ async function onSubmit() {
       <form class="form" @submit.prevent="onSubmit">
         <div class="field">
           <label class="field-label" for="user">{{ t('login.user_id') }}</label>
-          <input id="user" v-model="username" type="text" autocomplete="off" placeholder="admin" />
+		  <input id="user" v-model="username" type="text" autocomplete="username" placeholder="admin" />
         </div>
         <div class="field">
           <label class="field-label" for="pass">{{ t('login.secure_key') }}</label>
-          <input id="pass" v-model="password" type="password" placeholder="········" />
+		  <input id="pass" v-model="password" type="password" autocomplete="current-password" placeholder="········" />
         </div>
         <div v-if="failed" class="error">{{ failed }}</div>
         <button type="submit" :disabled="loading" :class="{ busy: loading }">
@@ -61,7 +62,7 @@ async function onSubmit() {
         </button>
       </form>
       <div class="footer-info">
-        <span>{{ t('login.node') }}</span>
+		<span>{{ t('login.node') }} {{ nodeEndpoint }}</span>
         <span>{{ t('login.proto') }}</span>
       </div>
     </div>

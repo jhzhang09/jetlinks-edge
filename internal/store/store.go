@@ -1,4 +1,4 @@
-// Package store 提供点组、点位、用户等数据的持久化。
+// Package store 提供南向连接、采集组、点位、北向应用和用户数据的持久化。
 //
 // 默认使用 SQLite（零依赖），可切换为 PostgreSQL（多实例共享配置）。
 // 所有数据库访问通过 gorm 抽象，便于切换底层。
@@ -89,6 +89,15 @@ func (s *Store) SetAuthConfig(secret string, tokenTTL time.Duration) {
 // DB 暴露底层 gorm（用于 Web handler 直接查询）。
 func (s *Store) DB() *gorm.DB { return s.db }
 
+// Ping 验证底层数据库连接是否可用。
+func (s *Store) Ping(ctx context.Context) error {
+	db, err := s.db.DB()
+	if err != nil {
+		return err
+	}
+	return db.PingContext(ctx)
+}
+
 // Migrate 自动迁移表结构。
 func (s *Store) Migrate() error {
 	err := s.db.AutoMigrate(&core.Connection{}, &core.Group{}, &core.Tag{}, &User{}, &core.NorthApp{}, &core.GroupNorthAppBinding{})
@@ -101,18 +110,25 @@ func (s *Store) Migrate() error {
 	return s.migrateNorthAppBindings()
 }
 
-// migrateNorthAppBindings 将旧 north_app_id 逗号列表幂等迁移到关系表。
-// 旧列继续保留并同步，以兼容现有 API 和旧版程序。
+// migrateNorthAppBindings 将旧 north_app_id 逗号列表幂等迁移到权威关系表。
+// 新数据库不再创建该旧列；已有列只读迁移，不再作为事实来源。
 func (s *Store) migrateNorthAppBindings() error {
-	var groups []core.Group
-	if err := s.db.Where("north_app_id IS NOT NULL AND north_app_id <> ''").Find(&groups).Error; err != nil {
+	if !s.db.Migrator().HasColumn("groups", "north_app_id") {
+		return nil
+	}
+	type legacyBinding struct {
+		GroupID    string `gorm:"column:id"`
+		NorthAppID string `gorm:"column:north_app_id"`
+	}
+	var groups []legacyBinding
+	if err := s.db.Raw("SELECT id, north_app_id FROM groups WHERE north_app_id IS NOT NULL AND north_app_id <> ''").Scan(&groups).Error; err != nil {
 		return err
 	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		for _, group := range groups {
 			for _, appID := range splitNorthAppIDs(group.NorthAppID) {
-				binding := core.GroupNorthAppBinding{GroupID: group.ID, NorthAppID: appID}
-				if err := tx.Where("group_id = ? AND north_app_id = ?", group.ID, appID).
+				binding := core.GroupNorthAppBinding{GroupID: group.GroupID, NorthAppID: appID}
+				if err := tx.Where("group_id = ? AND north_app_id = ?", group.GroupID, appID).
 					FirstOrCreate(&binding).Error; err != nil {
 					return err
 				}
@@ -146,7 +162,7 @@ func (s *Store) runDataMigration() error {
 		conn := &core.Connection{
 			ID:          connID,
 			Name:        og.Name + " 通道",
-			Description: "由旧版点组自动迁移创建的物理通道",
+			Description: "由旧版采集组自动迁移创建的南向连接",
 			Driver:      og.Driver,
 			Enabled:     true,
 			ConfigJSON:  og.ConfigJSON,
@@ -323,7 +339,7 @@ func (s *Store) SaveGroup(ctx context.Context, g *core.Group) error {
 	return s.persistGroup(ctx, g, false)
 }
 
-// CreateGroup 新建点组及其北向绑定，已存在的主键不会被覆盖。
+// CreateGroup 新建采集组及其北向绑定，已存在的主键不会被覆盖。
 func (s *Store) CreateGroup(ctx context.Context, g *core.Group) error {
 	return s.persistGroup(ctx, g, true)
 }
@@ -498,22 +514,10 @@ func (s *Store) persistNorthApp(ctx context.Context, n *core.NorthApp, create bo
 }
 
 func (s *Store) DeleteNorthApp(ctx context.Context, id string) error {
-	// 解除所有引用此 NorthApp 的 Group 的绑定（支持逗号分隔多北向绑定）
+	// 解除所有引用此 NorthApp 的采集组关系。
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("north_app_id = ?", id).Delete(&core.GroupNorthAppBinding{}).Error; err != nil {
 			return err
-		}
-		var groups []core.Group
-		if err := tx.Where("north_app_id LIKE ?", "%"+id+"%").Find(&groups).Error; err != nil {
-			return err
-		}
-		for _, g := range groups {
-			if core.HasNorthAppID(g.NorthAppID, id) {
-				newID := core.RemoveNorthAppID(g.NorthAppID, id)
-				if err := tx.Model(&g).Update("north_app_id", newID).Error; err != nil {
-					return err
-				}
-			}
 		}
 		return tx.Delete(&core.NorthApp{}, "id = ?", id).Error
 	})
@@ -556,9 +560,7 @@ func (s *Store) populateGroupBindings(ctx context.Context, groups []core.Group) 
 		byGroup[binding.GroupID] = append(byGroup[binding.GroupID], binding.NorthAppID)
 	}
 	for i := range groups {
-		if ids := byGroup[groups[i].ID]; len(ids) > 0 {
-			groups[i].NorthAppID = strings.Join(ids, ",")
-		}
+		groups[i].NorthAppID = strings.Join(byGroup[groups[i].ID], ",")
 	}
 	return nil
 }

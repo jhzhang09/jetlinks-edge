@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -23,7 +24,7 @@ func NewTagHandler(r *core.Runner, s *store.Store) *TagHandler {
 	return &TagHandler{runner: r, store: s}
 }
 
-// ListByGroup 列出某个点组的所有点位。
+// ListByGroup 列出某个采集组的所有点位。
 func (h *TagHandler) ListByGroup(c *gin.Context) {
 	groupID := c.Param("id")
 	tags, err := h.store.ListTagsByGroup(c.Request.Context(), groupID)
@@ -74,6 +75,13 @@ func (h *TagHandler) Create(c *gin.Context) {
 		return
 	}
 	if err := h.runner.Reload(c.Request.Context(), groupID); err != nil {
+		rollbackErr := h.store.DeleteTag(c.Request.Context(), t.ID)
+		if rollbackErr == nil {
+			rollbackErr = h.runner.Reload(c.Request.Context(), groupID)
+		}
+		if rollbackErr != nil {
+			err = fmt.Errorf("apply tag creation: %w; rollback failed: %v", err, rollbackErr)
+		}
 		errResp(c, http.StatusInternalServerError, err)
 		return
 	}
@@ -124,6 +132,13 @@ func (h *TagHandler) Update(c *gin.Context) {
 		return
 	}
 	if err := h.runner.Reload(c.Request.Context(), t.GroupID); err != nil {
+		rollbackErr := h.store.SaveTag(c.Request.Context(), existing)
+		if rollbackErr == nil {
+			rollbackErr = h.runner.Reload(c.Request.Context(), t.GroupID)
+		}
+		if rollbackErr != nil {
+			err = fmt.Errorf("apply tag update: %w; rollback failed: %v", err, rollbackErr)
+		}
 		errResp(c, http.StatusInternalServerError, err)
 		return
 	}
@@ -147,6 +162,13 @@ func (h *TagHandler) Delete(c *gin.Context) {
 		return
 	}
 	if err := h.runner.Reload(c.Request.Context(), tag.GroupID); err != nil {
+		rollbackErr := h.store.SaveTag(c.Request.Context(), tag)
+		if rollbackErr == nil {
+			rollbackErr = h.runner.Reload(c.Request.Context(), tag.GroupID)
+		}
+		if rollbackErr != nil {
+			err = fmt.Errorf("apply tag deletion: %w; rollback failed: %v", err, rollbackErr)
+		}
 		errResp(c, http.StatusInternalServerError, err)
 		return
 	}
@@ -203,7 +225,7 @@ func (h *TagHandler) Write(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"id": id, "written": true, "value": req.Value})
 }
 
-// LastValues 返回点组最近一次采集值。
+// LastValues 返回采集组最近一次采集值。
 func (h *TagHandler) LastValues(c *gin.Context) {
 	id := c.Param("id")
 	c.JSON(http.StatusOK, h.runner.LastValues(id))

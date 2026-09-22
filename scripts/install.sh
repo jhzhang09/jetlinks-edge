@@ -50,21 +50,25 @@ fi
 
 # 2. 建目录并复制文件
 echo "[2/5] installing files to $PREFIX ..."
-mkdir -p "$PREFIX" "$PREFIX/data"
+mkdir -p "$PREFIX" "$PREFIX/data" "$PREFIX/plugins"
 cp -f "$BUNDLE_ROOT/bin/jetlinks-edge" "$PREFIX/jetlinks-edge"
 chmod +x "$PREFIX/jetlinks-edge"
 
 # 3. 生成 config.yaml（绝对路径，避免 cwd 问题）
+JWT_SECRET=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+ADMIN_PASSWORD=$(od -An -N18 -tx1 /dev/urandom | tr -d ' \n')
 cat > "$PREFIX/config.yaml" <<EOF
-# 由 install.sh 自动生成。生产建议改 jwt_secret。
+# 由 install.sh 自动生成。生产模式禁止默认凭据。
 web:
   addr: "0.0.0.0:${WEB_PORT}"
-  jwt_secret: "change-me-$(date +%s)"
+  production: true
+  jwt_secret: "${JWT_SECRET}"
   token_ttl: 24h
   default_user: admin
-  default_password: admin123
+  default_password: "${ADMIN_PASSWORD}"
   # 默认使用内嵌前端静态文件。若需使用外置资源调试，可填写目录路径（如 "${PREFIX}/web/dist"）
   static_dir: ""
+  trusted_proxies: []
 
 log:
   level: info
@@ -79,7 +83,12 @@ collector:
   read_timeout: 3s
   write_timeout: 3s
   reconnect_delay: 5s
+
+plugins:
+  enabled: true
+  directory: "${PREFIX}/plugins"
 EOF
+chmod 600 "$PREFIX/config.yaml"
 
 # 4. 数据目录权限
 chown -R "$USER":"$USER" "$PREFIX"
@@ -137,4 +146,5 @@ echo "  binary:   ${PREFIX}/jetlinks-edge"
 echo "  config:   ${PREFIX}/config.yaml"
 echo "  data:     ${PREFIX}/data/ (DB / SQLite 存储目录)"
 echo "  web URL:  http://<server-ip>:${WEB_PORT} (由二进制内嵌提供服务)"
-echo "  login:    admin / admin123"
+echo "  login:    admin / ${ADMIN_PASSWORD}"
+echo "  IMPORTANT: save this password now and change it after the first login."

@@ -3,13 +3,13 @@
 // 核心职责：
 //  1. 维护驱动注册表（南向），按 driver 名查找 SouthDriver 实例
 //  2. 维护北向应用注册表，按 northapp 名查找 NorthApp 实例
-//  3. 加载点组配置（Group + Tag），为每个点组创建采集协程
+//  3. 加载采集组配置（Group + Tag），为每个采集组创建采集协程
 //  4. 把采集结果路由到对应的北向应用
 //
 // 设计：
-//   - 点组（Group）= 一台逻辑设备，对应一个南向驱动实例
+//   - 采集组（Group）= 一台逻辑设备，引用一个南向连接
 //   - 点位（Tag）= 一个属性，对应一个 Modbus 寄存器 / OPC-UA 节点 / ...
-//   - 调度器（Runner）= 一个点组对应一个 goroutine，按 interval 周期采集
+//   - 调度器（Runner）= 一个采集组对应一个 goroutine，按 interval 周期采集
 package core
 
 import (
@@ -154,12 +154,12 @@ const (
 	QualityUncertain Quality = "uncertain"
 )
 
-// Group 点组 = 一台逻辑设备。
+// Group 采集组 = 一台逻辑设备。
 type Group struct {
 	ID           string                 `json:"id" gorm:"primaryKey;type:varchar(64)"`
 	Name         string                 `json:"name" gorm:"type:varchar(128)"`
 	Description  string                 `json:"description" gorm:"type:varchar(256)"`
-	ConnectionID string                 `json:"connectionId" gorm:"type:varchar(64);index"` // 关联的物理通道外键
+	ConnectionID string                 `json:"connectionId" gorm:"type:varchar(64);index"` // 关联的南向连接外键
 	Driver       string                 `json:"driver" gorm:"-"`                            // 驱动类型，从关联物理连接动态填充
 	Interval     time.Duration          `json:"interval" gorm:"-"`                          // 采集周期（不存 DB，启动时由 IntervalMs 转换）
 	IntervalMs   int                    `json:"intervalMs" gorm:"column:interval_ms"`
@@ -167,7 +167,7 @@ type Group struct {
 	ConfigJSON   string                 `json:"-" gorm:"column:config;type:text"`
 	Enabled      bool                   `json:"enabled" gorm:"default:true"`
 	// 与北向应用的关联：可空（纯本地采集）、可改（切换上送目标不影响采集）
-	NorthAppID string `json:"northAppId" gorm:"type:text"`
+	NorthAppID string `json:"northAppId" gorm:"-"`
 	// 设备身份：每台设备一份，定义本 Group 对应 JetLinks 平台哪个 productId/deviceId
 	Device DeviceConfig `json:"device" gorm:"embedded;embeddedPrefix:device_"`
 	Tags   []Tag        `json:"tags" gorm:"foreignKey:GroupID;references:ID"`
@@ -177,7 +177,7 @@ type Group struct {
 //
 // 语义：
 //   - 一个 NorthApp 是一种"上送通道"（如 jetlinks-mqtt），可被多个 Group 共享。
-//   - 改 NorthApp 配置不会影响点组的 Modbus 连接/采集逻辑。
+//   - 改 NorthApp 配置不会影响采集组的南向连接和采集逻辑。
 //   - NorthApp 可独立启停（Enabled=false 时不上送，但 Group 仍在采集）。
 //
 // 关键：NorthApp 内部**不包含设备身份**（productId/deviceId）。它只描述
@@ -341,8 +341,8 @@ type NorthCommand struct {
 	Payload    map[string]interface{} `json:"payload"`
 }
 
-// GroupNorthAppBinding 是点组与北向应用的持久化多对多关系。
-// NorthAppID 旧字段仍保留作为 API 兼容层，新关系表才是多北向绑定的结构化存储。
+// GroupNorthAppBinding 是采集组与北向应用唯一的持久化关系。
+// Group.NorthAppID 只作为 API 兼容视图，由 Store 从本关系表派生。
 type GroupNorthAppBinding struct {
 	GroupID    string    `json:"groupId" gorm:"primaryKey;type:varchar(64)"`
 	NorthAppID string    `json:"northAppId" gorm:"primaryKey;type:varchar(64);index"`

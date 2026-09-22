@@ -25,7 +25,7 @@ const emptyView: OperationsView = {
 const globalData = ref<OperationsView>(emptyView)
 const globalLoading = ref(false)
 const globalError = ref('')
-const globalHistory = ref<{ healthy: number[]; warning: number[]; critical: number[] }>({ healthy: [], warning: [], critical: [] })
+const globalHistory = ref<{ healthy: number[]; warning: number[]; critical: number[]; timestamps: string[] }>({ healthy: [], warning: [], critical: [], timestamps: [] })
 
 // 活跃实例计数器，控制仅由一个全局定时器执行网络轮询
 let activeInstances = 0
@@ -45,7 +45,7 @@ export function useOperations(refreshInterval = 5000) {
   const enabledNorth = computed(() => data.value.northApps.filter(item => item.enabled).length)
   const criticalAlarms = computed(() => data.value.alarms.filter(item => item.severity === 'critical').length)
 
-  // 科学评估网关健康度评分（基于组件状态分类，北向应用只跟北向告警关联，南向设备只跟南向及点位告警关联）
+	  // 按组件状态计算边缘节点健康度：北向应用关联北向告警，采集组关联连接和点位告警。
   const overallHealth = computed(() => {
     const total = data.value.groups.filter(g => g.enabled).length + data.value.northApps.filter(n => n.enabled).length
     if (!total) return 100
@@ -59,7 +59,7 @@ export function useOperations(refreshInterval = 5000) {
       if (!hasAlarms) healthyCount++
     }
     
-    // 2. 判定南向设备是否完全健康
+	// 2. 判定采集组是否健康
     for (const group of data.value.groups.filter(g => g.enabled)) {
       if (!group.connected) continue
       const hasAlarms = data.value.alarms.some(a => {
@@ -104,7 +104,7 @@ export function useOperations(refreshInterval = 5000) {
           }
         }
         
-        // 2. 南向设备与下辖点位状态分类
+		// 2. 采集组与下辖点位状态分类
         for (const group of res.groups.filter(g => g.enabled)) {
           const isGroupAlarm = (a: any) => {
             if (a.sourceType === 'group' && a.sourceId === group.id) return true
@@ -127,6 +127,10 @@ export function useOperations(refreshInterval = 5000) {
         history.value.warning.push(Math.round(warningCount * 100 / total))
         history.value.critical.push(Math.round(criticalCount * 100 / total))
       }
+      
+      const now = new Date()
+      const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`
+      history.value.timestamps.push(timeStr)
       
       for (const values of Object.values(history.value)) {
         if (values.length > 48) values.splice(0, values.length - 48)

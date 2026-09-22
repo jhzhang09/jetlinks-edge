@@ -65,7 +65,7 @@ const topologyLinks = computed(() => {
     }
   }
 
-  // 1. 南向插件与物理通道之间 (一二列) 表示从属关系
+	  // 1. 南向插件与南向连接之间（一二列）表示从属关系
   for (const conn of data.value.connections || []) {
     push(`driver-plugin:${conn.driver}`, `connection:${conn.id}`)
   }
@@ -73,7 +73,7 @@ const topologyLinks = computed(() => {
   for (const group of data.value.groups) {
     const conn = (data.value.connections || []).find(c => c.id === group.connectionId)
     if (conn) {
-      // 2. 物理通道与采集组之间 (二三列)：标识连接健康度状态
+	  // 2. 南向连接与采集组之间（二三列）：标识连接健康度状态
       const connStatus = !conn.enabled || conn.connected ? 'healthy' : 'critical'
       push(`connection:${conn.id}`, `group:${group.id}`, connStatus)
     }
@@ -112,107 +112,142 @@ const time = formatGoTime
         <button class="ops-button primary" @click="router.push('/groups')">{{ t('topo.config') }}</button>
       </div>
     </div>
-    <div class="flow-toolbar"><span>{{ t('topo.refresh_interval') }}</span><div><b class="good">{{ t('topo.health') }}</b><b class="warn">{{ t('topo.warn') }}</b><b class="bad">{{ t('topo.bad') }}</b></div></div>
     <div v-if="error" class="ops-error">{{ error }}</div>
 
     <div class="topology-shell">
-      <section class="flow-board">
-        <TopologyFlowCanvas :links="topologyLinks" />
-        <div class="flow-column">
-          <h3>{{ t('col.south_plugins') }} <small>({{ southPlugins.length }})</small></h3>
-          <button
-            v-for="plugin in southPlugins"
-            :key="plugin.type"
-            :data-topology-node="`driver-plugin:${plugin.type}`"
-            @click="select(plugin.type)"
-          >
-            <strong>{{ plugin.name }}</strong>
-            <span>{{ plugin.version }}</span>
-            <small>{{ t('card.channels_count').replace('{count}', String(plugin.count)) }}</small>
-          </button>
-          <div v-if="!southPlugins.length" class="empty-node">{{ t('empty.south_plugins') }}</div>
+      <div class="flow-container">
+        <div class="flow-toolbar">
+          <div class="toolbar-left">
+            <span class="refresh-badge">{{ t('topo.refresh_interval') }}</span>
+          </div>
+          <div class="toolbar-legend">
+            <!-- 链路图例 -->
+            <span class="legend-group">
+              <span class="legend-item"><i class="legend-line attr"></i>{{ t('topo.legend_attribution') }}</span>
+              <span class="legend-item"><i class="legend-line stream"></i>{{ t('topo.legend_flow') }}</span>
+            </span>
+            <span class="legend-divider"></span>
+            <!-- 状态图例 -->
+            <span class="legend-group">
+              <b class="good"><span class="status-dot good"></span>{{ t('topo.health') }}</b>
+              <b class="warn"><span class="status-dot warn"></span>{{ t('topo.warn') }}</b>
+              <b class="bad"><span class="status-dot bad"></span>{{ t('topo.bad') }}</b>
+            </span>
+          </div>
         </div>
 
-        <div class="flow-column">
-          <h3>{{ t('col.channels') }} <small>({{ (data.connections || []).length }})</small></h3>
-          <button
-            v-for="conn in sortedConnections"
-            :key="conn.id"
-            :data-topology-node="`connection:${conn.id}`"
-            :class="['has-badge', { selected: selectedId === conn.id, failed: conn.enabled && !conn.connected }]"
-            @click="select(conn.id)"
-          >
-            <div class="card-meta">
-              <div class="node-badge" :class="conn.connected ? 'live' : 'dead'">
-                <span class="badge-dot"></span>
-                <span class="badge-text">{{ conn.connected ? t('state.connected') : t('state.disconnected') }}</span>
+        <section class="flow-board">
+          <TopologyFlowCanvas :links="topologyLinks" />
+
+          <!-- 1. 南向插件 (静态归属卡片) -->
+          <div class="flow-column col-south-plugin">
+            <h3>{{ t('col.south_plugins') }} <small>({{ southPlugins.length }})</small></h3>
+            <button
+              v-for="plugin in southPlugins"
+              :key="plugin.type"
+              class="plugin-card"
+              :data-topology-node="`driver-plugin:${plugin.type}`"
+              @click="select(plugin.type)"
+            >
+              <div class="card-meta">
+                <span class="spec-tag">DRIVER</span>
+                <span class="version-tag">v{{ plugin.version }}</span>
               </div>
-            </div>
-            <strong>{{ conn.name }}</strong>
-            <span>ID: {{ conn.id }}</span>
-            <small>{{ conn.driver }}</small>
-          </button>
-          <div v-if="!(data.connections || []).length" class="empty-node">{{ t('empty.channels') }}</div>
-        </div>
+              <strong>{{ plugin.name }}</strong>
+              <small>{{ t('card.channels_count').replace('{count}', String(plugin.count)) }}</small>
+            </button>
+            <div v-if="!southPlugins.length" class="empty-node">{{ t('empty.south_plugins') }}</div>
+          </div>
 
-        <div class="flow-column">
-          <h3>{{ t('col.groups') }} <small>({{ data.groups.length }})</small></h3>
-          <button
-            v-for="group in sortedGroups"
-            :key="group.id"
-            :data-topology-node="`group:${group.id}`"
-            :class="['has-badge', { selected: selectedId === group.id, failed: group.enabled && !group.connected }]"
-            @click="select(group.id)"
-          >
-            <div class="card-meta">
-              <div class="node-badge" :class="group.connected ? 'live' : 'dead'">
-                <span class="badge-dot"></span>
-                <span class="badge-text">{{ group.connected ? t('state.running') : t('state.stopped') }}</span>
+          <!-- 2. 南向连接 (实时流转卡片) -->
+          <div class="flow-column col-channel">
+            <h3>{{ t('col.channels') }} <small>({{ (data.connections || []).length }})</small></h3>
+            <button
+              v-for="conn in sortedConnections"
+              :key="conn.id"
+              :data-topology-node="`connection:${conn.id}`"
+              :class="['runtime-card', 'has-badge', { selected: selectedId === conn.id, failed: conn.enabled && !conn.connected }]"
+              @click="select(conn.id)"
+            >
+              <div class="card-meta">
+                <div class="node-badge" :class="conn.connected ? 'live' : 'dead'">
+                  <span class="badge-dot"></span>
+                  <span class="badge-text">{{ conn.connected ? t('state.connected') : t('state.disconnected') }}</span>
+                </div>
               </div>
-            </div>
-            <strong>{{ group.name }}</strong>
-            <span>ID: {{ group.id }}</span>
-            <small>{{ t('card.interval').replace('{ms}', String(group.intervalMs)) }}</small>
-          </button>
-          <div v-if="!data.groups.length" class="empty-node">{{ t('empty.groups') }}</div>
-        </div>
+              <strong>{{ conn.name }}</strong>
+              <span>ID: {{ conn.id }}</span>
+              <small>{{ conn.driver }}</small>
+            </button>
+            <div v-if="!(data.connections || []).length" class="empty-node">{{ t('empty.channels') }}</div>
+          </div>
 
-        <div class="flow-column">
-          <h3>{{ t('col.north_apps') }} <small>({{ data.northApps.length }})</small></h3>
-          <button
-            v-for="app in sortedNorthApps"
-            :key="app.id"
-            :data-topology-node="`north-app:${app.id}`"
-            :class="['has-badge', { selected: selectedId === app.id, failed: app.enabled && !app.connected }]"
-            @click="select(app.id)"
-          >
-            <div class="card-meta">
-              <div class="node-badge" :class="app.connected ? 'live' : 'dead'">
-                <span class="badge-dot"></span>
-                <span class="badge-text">{{ app.connected ? t('state.running') : t('state.offline') }}</span>
+          <!-- 3. 采集组 (实时流转卡片) -->
+          <div class="flow-column col-group">
+            <h3>{{ t('col.groups') }} <small>({{ data.groups.length }})</small></h3>
+            <button
+              v-for="group in sortedGroups"
+              :key="group.id"
+              :data-topology-node="`group:${group.id}`"
+              :class="['runtime-card', 'has-badge', { selected: selectedId === group.id, failed: group.enabled && !group.connected }]"
+              @click="select(group.id)"
+            >
+              <div class="card-meta">
+                <div class="node-badge" :class="group.connected ? 'live' : 'dead'">
+                  <span class="badge-dot"></span>
+                  <span class="badge-text">{{ group.connected ? t('state.running') : t('state.stopped') }}</span>
+                </div>
               </div>
-            </div>
-            <strong>{{ app.name }}</strong>
-            <span>{{ app.type }}</span>
-            <small>{{ t('card.groups_bound').replace('{count}', String(data.groups.filter(item => item.northAppId && item.northAppId.split(',').filter(Boolean).includes(app.id)).length)) }}</small>
-          </button>
-          <div v-if="!data.northApps.length" class="empty-node">{{ t('empty.north_apps') }}</div>
-        </div>
+              <strong>{{ group.name }}</strong>
+              <span>ID: {{ group.id }}</span>
+              <small>{{ t('card.interval').replace('{ms}', String(group.intervalMs)) }}</small>
+            </button>
+            <div v-if="!data.groups.length" class="empty-node">{{ t('empty.groups') }}</div>
+          </div>
 
-        <div class="flow-column">
-          <h3>{{ t('col.north_plugins') }} <small>({{ northPlugins.length }})</small></h3>
-          <button
-            v-for="plugin in northPlugins"
-            :key="plugin.type"
-            :data-topology-node="`north-plugin:${plugin.type}`"
-          >
-            <strong>{{ plugin.name }}</strong>
-            <span>{{ plugin.version }}</span>
-            <small>{{ t('card.apps_count').replace('{count}', String(plugin.count)) }}</small>
-          </button>
-          <div v-if="!northPlugins.length" class="empty-node">{{ t('empty.north_plugins') }}</div>
-        </div>
-      </section>
+          <!-- 4. 北向应用 (实时流转卡片) -->
+          <div class="flow-column col-north-app">
+            <h3>{{ t('col.north_apps') }} <small>({{ data.northApps.length }})</small></h3>
+            <button
+              v-for="app in sortedNorthApps"
+              :key="app.id"
+              :data-topology-node="`north-app:${app.id}`"
+              :class="['runtime-card', 'has-badge', { selected: selectedId === app.id, failed: app.enabled && !app.connected }]"
+              @click="select(app.id)"
+            >
+              <div class="card-meta">
+                <div class="node-badge" :class="app.connected ? 'live' : 'dead'">
+                  <span class="badge-dot"></span>
+                  <span class="badge-text">{{ app.connected ? t('state.running') : t('state.offline') }}</span>
+                </div>
+              </div>
+              <strong>{{ app.name }}</strong>
+              <span>{{ app.type }}</span>
+              <small>{{ t('card.groups_bound').replace('{count}', String(data.groups.filter(item => item.northAppId && item.northAppId.split(',').filter(Boolean).includes(app.id)).length)) }}</small>
+            </button>
+            <div v-if="!data.northApps.length" class="empty-node">{{ t('empty.north_apps') }}</div>
+          </div>
+
+          <!-- 5. 北向插件 (静态归属卡片) -->
+          <div class="flow-column col-north-plugin">
+            <h3>{{ t('col.north_plugins') }} <small>({{ northPlugins.length }})</small></h3>
+            <button
+              v-for="plugin in northPlugins"
+              :key="plugin.type"
+              class="plugin-card"
+              :data-topology-node="`north-plugin:${plugin.type}`"
+            >
+              <div class="card-meta">
+                <span class="spec-tag">PROTOCOL</span>
+                <span class="version-tag">v{{ plugin.version }}</span>
+              </div>
+              <strong>{{ plugin.name }}</strong>
+              <small>{{ t('card.apps_count').replace('{count}', String(plugin.count)) }}</small>
+            </button>
+            <div v-if="!northPlugins.length" class="empty-node">{{ t('empty.north_plugins') }}</div>
+          </div>
+        </section>
+      </div>
 
       <aside class="alarm-rail">
         <header>{{ t('log.active_alarms') }} <button @click="router.push('/alarms')">{{ t('log.view_all') }}</button></header>
@@ -268,18 +303,141 @@ const time = formatGoTime
 .topology-tabs { height: 35px; display: flex; align-items: center; gap: 26px; border-bottom: 1px solid var(--line); }
 .topology-tabs strong { height: 35px; display: flex; align-items: center; border-bottom: 2px solid var(--cyan); color: var(--text); font-size: 13px; }
 .topology-tabs button, .flow-toolbar button, .alarm-rail button { border: 0; background: transparent; color: var(--muted); cursor: pointer; }
-.flow-toolbar { min-height: 48px; display: flex; align-items: center; gap: 18px; color: var(--muted); font-size: 12px; }
-.flow-toolbar div { margin-left: auto; display: flex; gap: 14px; }
-.flow-toolbar b { font-weight: 500; }
+
+.topology-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: 12px;
+  align-items: start;
+}
+
+.flow-container {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 顶栏工具条与双类型图例（对齐拓扑画布宽度，支持自动换行防溢出） */
+.flow-toolbar {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 0 2px;
+}
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.refresh-badge {
+  color: var(--dim);
+}
+.toolbar-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.legend-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.legend-line {
+  display: inline-block;
+  width: 18px;
+  height: 0;
+  vertical-align: middle;
+}
+.legend-line.attr {
+  border-bottom: 1.5px dashed #94a3b8;
+  position: relative;
+}
+.legend-line.attr::after {
+  content: '';
+  position: absolute;
+  right: -2px;
+  top: -2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+.legend-line.stream {
+  border-bottom: 2px solid var(--cyan);
+  position: relative;
+}
+.legend-line.stream::after {
+  content: '';
+  position: absolute;
+  right: -1px;
+  top: -3px;
+  border-top: 3px solid transparent;
+  border-bottom: 3px solid transparent;
+  border-left: 4.5px solid var(--cyan);
+}
+.legend-divider {
+  width: 1px;
+  height: 14px;
+  background: var(--line);
+}
+.status-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 4px;
+}
+.status-dot.good { background: var(--cyan); }
+.status-dot.warn { background: var(--amber); }
+.status-dot.bad { background: var(--red); }
+.flow-toolbar b { font-weight: 500; display: inline-flex; align-items: center; white-space: nowrap; }
 .good { color: var(--cyan); }
 .warn, .warning { color: var(--amber); }
 .bad, .critical { color: var(--red); }
 
-.topology-shell { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 12px; }
-.flow-board { min-height: 560px; position: relative; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 58px; padding: 12px 14px 18px; border: 1px solid var(--line); background: var(--surface); overflow: hidden; }
+/* 拓扑画布外框与 5 列布局（间距收敛为 36px，卡片更充盈，防屏幕右侧裁切） */
+.flow-board {
+  min-height: 540px;
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 36px;
+  padding: 16px 14px 20px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
 .flow-column { position: relative; z-index: 1; min-width: 0; }
-.flow-column h3 { margin: 0 0 12px; color: var(--text); font-size: 13px; }
-.flow-column h3 small { color: var(--dim); }
+.flow-column h3 {
+  margin: 0 0 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.flow-column h3 small { color: var(--dim); font-size: 11px; }
+
+/* 节点通用基类 */
 .flow-column button {
   width: 100%;
   height: 86px;
@@ -289,45 +447,102 @@ const time = formatGoTime
   justify-content: center;
   gap: 4px;
   margin-bottom: 10px;
-  padding: 6px 14px;
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  padding: 6px 12px;
   border-radius: 12px;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.02) 0%, rgba(255, 255, 255, 0.04) 100%);
   color: inherit;
   text-align: left;
   cursor: pointer;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+  transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
 }
 .flow-column button.has-badge {
   padding-top: 4px;
   padding-bottom: 4px;
   gap: 1.5px;
 }
-.flow-column button:hover {
+
+/* 1. 插件规范卡片（两头静态归属：精致规格卡片感，无动态流动心跳） */
+.plugin-card {
+  border: 1px dashed rgba(148, 163, 184, 0.24);
+  background: rgba(148, 163, 184, 0.03);
+  box-shadow: none;
+}
+.plugin-card:hover {
+  transform: translateY(-2px);
+  background: rgba(148, 163, 184, 0.08);
+  border-style: solid;
+  border-color: rgba(148, 163, 184, 0.45);
+}
+.plugin-card.selected {
+  background: rgba(148, 163, 184, 0.12);
+  border-style: solid;
+  border-color: rgba(148, 163, 184, 0.6);
+}
+.col-south-plugin button.plugin-card {
+  border-left: 3px dashed #64748b;
+}
+.col-south-plugin button.plugin-card:hover, .col-south-plugin button.plugin-card.selected {
+  border-left-style: solid;
+  border-left-color: #94a3b8;
+}
+.col-north-plugin button.plugin-card {
+  border-left: 3px dashed #64748b;
+}
+.col-north-plugin button.plugin-card:hover, .col-north-plugin button.plugin-card.selected {
+  border-left-style: solid;
+  border-left-color: #94a3b8;
+}
+
+.spec-tag {
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(148, 163, 184, 0.16);
+  color: #94a3b8;
+}
+:global(html[data-theme='light']) .spec-tag {
+  background: rgba(100, 116, 139, 0.12);
+  color: #475569;
+}
+.version-tag {
+  font-size: 10px;
+  color: var(--dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+/* 2. 实时链路卡片（中间 3 列：动态运行反馈，彩条与心跳状态点） */
+.runtime-card {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.02) 0%, rgba(255, 255, 255, 0.04) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+.runtime-card:hover {
   transform: translateY(-3px);
   background: linear-gradient(135deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.07) 100%);
 }
-.flow-column button.selected {
+.runtime-card.selected {
   background: linear-gradient(135deg, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0.09) 100%);
   transform: scale(1.01);
 }
 
-/* 5 列指示彩条及悬浮发光配色 */
-.flow-column:nth-of-type(1) button { border-left: 3px solid #ff9f43; }
-.flow-column:nth-of-type(1) button:hover, .flow-column:nth-of-type(1) button.selected { border-color: #ff9f43; box-shadow: 0 8px 20px rgba(255, 159, 67, 0.15); }
+.col-channel button.runtime-card { border-left: 3px solid #00d2d3; }
+.col-channel button.runtime-card:hover, .col-channel button.runtime-card.selected {
+  border-color: #00d2d3;
+  box-shadow: 0 8px 20px rgba(0, 210, 211, 0.18);
+}
 
-.flow-column:nth-of-type(2) button { border-left: 3px solid #00d2d3; }
-.flow-column:nth-of-type(2) button:hover, .flow-column:nth-of-type(2) button.selected { border-color: #00d2d3; box-shadow: 0 8px 20px rgba(0, 210, 211, 0.15); }
+.col-group button.runtime-card { border-left: 3px solid #10ac84; }
+.col-group button.runtime-card:hover, .col-group button.runtime-card.selected {
+  border-color: #10ac84;
+  box-shadow: 0 8px 20px rgba(16, 172, 132, 0.18);
+}
 
-.flow-column:nth-of-type(3) button { border-left: 3px solid #10ac84; }
-.flow-column:nth-of-type(3) button:hover, .flow-column:nth-of-type(3) button.selected { border-color: #10ac84; box-shadow: 0 8px 20px rgba(16, 172, 132, 0.15); }
-
-.flow-column:nth-of-type(4) button { border-left: 3px solid #9b5de5; }
-.flow-column:nth-of-type(4) button:hover, .flow-column:nth-of-type(4) button.selected { border-color: #9b5de5; box-shadow: 0 8px 20px rgba(155, 93, 229, 0.15); }
-
-.flow-column:nth-of-type(5) button { border-left: 3px solid #f15bb5; }
-.flow-column:nth-of-type(5) button:hover, .flow-column:nth-of-type(5) button.selected { border-color: #f15bb5; box-shadow: 0 8px 20px rgba(241, 91, 181, 0.15); }
+.col-north-app button.runtime-card { border-left: 3px solid #9b5de5; }
+.col-north-app button.runtime-card:hover, .col-north-app button.runtime-card.selected {
+  border-color: #9b5de5;
+  box-shadow: 0 8px 20px rgba(155, 93, 229, 0.18);
+}
 
 .flow-column button.failed {
   border-left-color: var(--red) !important;
@@ -339,6 +554,17 @@ const time = formatGoTime
 }
 
 /* 胶囊状态 Badge 容器 */
+.card-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  margin-bottom: 2px;
+}
+.runtime-card .card-meta {
+  justify-content: flex-end;
+}
+
 .node-badge {
   display: flex;
   align-items: center;
@@ -416,13 +642,7 @@ const time = formatGoTime
     border-color: rgba(239, 68, 68, 1);
   }
 }
-.card-meta {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  width: 100%;
-  margin-bottom: 2px;
-}
+
 .flow-column strong {
   color: var(--text);
   font-size: 13.5px;
@@ -465,18 +685,27 @@ const time = formatGoTime
 @media (max-width: 1150px) {
   .topology-shell { grid-template-columns: 1fr; }
   .alarm-rail { display: none; }
-  .flow-board { overflow-x: auto; grid-template-columns: repeat(5, minmax(190px, 1fr)); }
+  .flow-board { overflow-x: auto; grid-template-columns: repeat(5, minmax(190px, 1fr)); padding-top: 18px; }
 }
 
-:global(html[data-theme='light']) .flow-column button {
+:global(html[data-theme='light']) .plugin-card {
+  background: rgba(100, 116, 139, 0.03);
+  border: 1px dashed rgba(100, 116, 139, 0.25);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.02);
+}
+:global(html[data-theme='light']) .plugin-card:hover {
+  background: rgba(100, 116, 139, 0.07);
+  border-color: rgba(100, 116, 139, 0.45);
+}
+:global(html[data-theme='light']) .runtime-card {
   background: linear-gradient(135deg, rgba(0, 0, 0, 0.01) 0%, rgba(0, 0, 0, 0.02) 100%);
   border: 1px solid rgba(0, 0, 0, 0.06);
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.02);
 }
-:global(html[data-theme='light']) .flow-column button:hover {
+:global(html[data-theme='light']) .runtime-card:hover {
   background: linear-gradient(135deg, rgba(0, 0, 0, 0.02) 0%, rgba(0, 0, 0, 0.04) 100%);
 }
-:global(html[data-theme='light']) .flow-column button.selected {
+:global(html[data-theme='light']) .runtime-card.selected {
   background: linear-gradient(135deg, rgba(0, 0, 0, 0.03) 0%, rgba(0, 0, 0, 0.05) 100%);
 }
 </style>

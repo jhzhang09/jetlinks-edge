@@ -20,15 +20,17 @@ type Event struct {
 
 // EventBus 定义进程内发布订阅事件总线。
 type EventBus struct {
-	mu          sync.RWMutex
-	subscribers map[string]map[chan Event]struct{}
-	dropped     atomic.Uint64
+	mu        sync.RWMutex
+	exact     map[string]map[chan Event]struct{}
+	wildcards map[string]map[chan Event]struct{}
+	dropped   atomic.Uint64
 }
 
 // NewEventBus 创建一个新的事件总线实例。
 func NewEventBus() *EventBus {
 	return &EventBus{
-		subscribers: make(map[string]map[chan Event]struct{}),
+		exact:     make(map[string]map[chan Event]struct{}),
+		wildcards: make(map[string]map[chan Event]struct{}),
 	}
 }
 
@@ -37,16 +39,21 @@ func (eb *EventBus) Publish(topic string, ev Event) {
 	eb.mu.RLock()
 	defer eb.mu.RUnlock()
 
-	for subTopic, chans := range eb.subscribers {
+	eb.publishTo(eb.exact[topic], ev)
+	for subTopic, chans := range eb.wildcards {
 		if matchTopic(subTopic, topic) {
-			for ch := range chans {
-				select {
-				case ch <- ev:
-				default:
-					// 缓冲区满时丢弃，防止单个订阅者缓慢拖垮总线
-					eb.dropped.Add(1)
-				}
-			}
+			eb.publishTo(chans, ev)
+		}
+	}
+}
+
+func (eb *EventBus) publishTo(chans map[chan Event]struct{}, ev Event) {
+	for ch := range chans {
+		select {
+		case ch <- ev:
+		default:
+			// 缓冲区满时丢弃，防止单个订阅者缓慢拖垮总线。
+			eb.dropped.Add(1)
 		}
 	}
 }
@@ -62,22 +69,35 @@ func (eb *EventBus) Subscribe(topic string, bufSize int) (chan Event, func()) {
 	defer eb.mu.Unlock()
 
 	ch := make(chan Event, bufSize)
-	if eb.subscribers[topic] == nil {
-		eb.subscribers[topic] = make(map[chan Event]struct{})
+	subscribers := eb.exact
+	if hasWildcard(topic) {
+		subscribers = eb.wildcards
 	}
-	eb.subscribers[topic][ch] = struct{}{}
+	if subscribers[topic] == nil {
+		subscribers[topic] = make(map[chan Event]struct{})
+	}
+	subscribers[topic][ch] = struct{}{}
 
 	unsubscribe := func() {
 		eb.mu.Lock()
 		defer eb.mu.Unlock()
-		if chans, ok := eb.subscribers[topic]; ok {
+		if chans, ok := subscribers[topic]; ok {
 			delete(chans, ch)
 			if len(chans) == 0 {
-				delete(eb.subscribers, topic)
+				delete(subscribers, topic)
 			}
 		}
 	}
 	return ch, unsubscribe
+}
+
+func hasWildcard(topic string) bool {
+	for i := 0; i < len(topic); i++ {
+		if topic[i] == '+' || topic[i] == '#' {
+			return true
+		}
+	}
+	return false
 }
 
 // matchTopic 简易的 MQTT 式 Topic 匹配器。支持 "+" (单层) 和 "#" (多层通配符)。

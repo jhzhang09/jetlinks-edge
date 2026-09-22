@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-// Connection 物理连接通道（代表一个真实的物理链路，如 TCP 连接、串口线）。
+// Connection 南向连接（代表一个真实的物理链路，如 TCP 连接、串口线）。
 //
-// 物理通道维护了具体驱动类型的物理参数连接配置，而与具体的逻辑设备采集周期解耦。
+// 南向连接维护具体插件的物理参数，与采集组的采集周期解耦。
 type Connection struct {
 	ID          string                 `json:"id" gorm:"primaryKey;type:varchar(64)"`
 	Name        string                 `json:"name" gorm:"type:varchar(128)"`

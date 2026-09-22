@@ -29,6 +29,7 @@ const menuItems = computed(() => [
   { label: t('nav.devices'), code: 'SB', path: '/groups' },
   { label: t('nav.topology'), code: 'TP', path: '/topology' },
   { label: t('nav.gateway'), code: 'NB', path: '/northbound' },
+	  { label: t('nav.plugins'), code: 'PX', path: '/plugins' },
   { label: t('nav.alarms'), code: 'AL', path: '/alarms', count: data.value.alarms.length }
 ])
 const uptime = computed(() => {
@@ -77,9 +78,20 @@ function handleUserAction(key: string) {
 
     <main class="workspace" :class="{ collapsed }">
       <header class="topbar">
-        <div class="gateway"><span>{{ t('top.gateway') }}</span><strong :title="data.runtime.nodeId">{{ data.runtime.nodeId }}</strong><i></i><em>{{ t('top.running') }}</em></div>
-        <div class="runtime"><span>{{ t('top.uptime') }}<strong>{{ uptime }}</strong></span><span>{{ t('top.localtime') }}<strong>{{ now.toLocaleString() }}</strong></span></div>
-        <div class="resources"><span>{{ t('top.goroutines') }}<strong>{{ data.runtime.goroutines }}</strong></span><span>{{ t('top.memory') }}<strong>{{ memoryText }}</strong></span><span>{{ t('top.tasks') }}<strong>{{ enabledGroups }}</strong></span></div>
+        <div class="gateway">
+          <span>{{ t('top.gateway') }}</span>
+          <strong :title="data.runtime.nodeId">{{ data.runtime.nodeId }}</strong>
+          <span class="gateway-status"><i></i><em>{{ t('top.running') }}</em></span>
+        </div>
+        <div class="runtime">
+          <span>{{ t('top.uptime') }}<strong>{{ uptime }}</strong></span>
+          <span>{{ t('top.localtime') }}<strong>{{ now.toLocaleString() }}</strong></span>
+        </div>
+        <div class="resources">
+          <span>{{ t('top.goroutines') }}<strong>{{ data.runtime.goroutines }}</strong></span>
+          <span>{{ t('top.memory') }}<strong>{{ memoryText }}</strong></span>
+          <span>{{ t('top.tasks') }}<strong>{{ enabledGroups }}</strong></span>
+        </div>
         <div class="account">
           <button type="button" @click="router.push('/alarms')">{{ t('top.alarms') }} <b>{{ data.alarms.length }}</b></button>
           <button type="button" @click="themeStore.toggleTheme" class="theme-toggle-btn" :title="themeStore.theme === 'dark' ? t('top.theme_light') : t('top.theme_dark')">
@@ -101,14 +113,25 @@ function handleUserAction(key: string) {
 
 <style scoped>
 .shell { min-height: 100vh; display: flex; background: var(--bg); }.sidebar { position: fixed; inset: 0 auto 0 0; z-index: 10; width: 204px; display: flex; flex-direction: column; border-right: 1px solid var(--line); background: #0b151e; transition: width 0.2s ease-in-out; }
-.brand { height: 66px; display: flex; align-items: center; gap: 11px; padding: 0 18px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: #edf4f6; cursor: pointer; }.brand-mark { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid var(--cyan); color: var(--cyan); font: 700 11px var(--mono); }.brand strong { font-size: 17px; }
+.brand { height: 66px; display: flex; align-items: center; gap: 11px; padding: 0 18px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: #edf4f6; cursor: pointer; }.brand-mark { width: 32px; height: 32px; display: grid; flex: 0 0 32px; place-items: center; border: 1px solid var(--cyan); color: var(--cyan); font: 700 11px var(--mono); }.brand strong { font-size: 15px; white-space: nowrap; }
 .nav { flex: 1; padding: 9px 0; }.nav button { width: 100%; height: 54px; display: grid; grid-template-columns: 30px 1fr 24px; align-items: center; padding: 0 18px; border: 0; border-left: 3px solid transparent; background: transparent; color: #a5b5bd; font-size: 15px; font-weight: 600; text-align: left; cursor: pointer; }.nav button:hover, .nav button.active { background: #12232d; color: #e7f0f3; }.nav button.active { border-left-color: var(--cyan); color: var(--cyan); }.nav-code { color: #58717e; font: 11px var(--mono); }.nav b, .account b { display: grid; place-items: center; min-width: 20px; height: 20px; border-radius: 10px; background: var(--red); color: white; font-size: 12px; }
 .collapse { height: 50px; border: 0; border-top: 1px solid var(--line); background: transparent; color: var(--muted); text-align: left; padding-left: 22px; cursor: pointer; transition: padding 0.2s ease-in-out; }.workspace { width: calc(100% - 204px); min-height: 100vh; margin-left: 204px; transition: width 0.2s ease-in-out, margin-left 0.2s ease-in-out; }
-.topbar { height: 66px; position: sticky; top: 0; z-index: 8; display: grid; grid-template-columns: 330px 340px 1fr auto; align-items: center; border-bottom: 1px solid var(--line); background: rgba(7,16,25,.98); }.gateway, .runtime, .resources, .account { min-width: 0; height: 100%; display: flex; align-items: center; border-right: 1px solid var(--line); }
-.gateway { gap: 9px; padding: 0 16px; }.gateway span, .runtime span, .resources span { color: var(--muted); font-size: 12px; }.gateway strong { min-width: 132px; max-width: 158px; overflow: hidden; padding: 9px 12px; border: 1px solid var(--line-strong); color: #dce7eb; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }.gateway i { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }.gateway em { color: var(--green); font-size: 12px; font-style: normal; }
-.runtime span { min-width: 160px; padding: 0 14px; }.runtime strong { display: block; margin-top: 5px; color: #d2dde1; font: 12px var(--mono); }.resources { justify-content: center; gap: 24px; }.resources span { min-width: 64px; }.resources b { display: block; width: 55px; height: 4px; margin-top: 7px; background: var(--cyan); box-shadow: inset -34px 0 #253640; }
-.resources strong { display: block; margin-top: 5px; color: var(--cyan); font: 12px var(--mono); }
-.account { padding: 0 10px; border-right: 0; }.account button { height: 36px; padding: 0 10px; display: flex; align-items: center; gap: 6px; border: 0; background: transparent; color: #b3c1c8; font-size: 12px; cursor: pointer; }
+.topbar { height: 66px; position: sticky; top: 0; z-index: 8; display: flex; align-items: center; border-bottom: 1px solid var(--line); background: rgba(7,16,25,.98); }
+.gateway, .runtime, .resources, .account { min-width: 0; height: 100%; display: flex; align-items: center; border-right: 1px solid var(--line); }
+.gateway { gap: 10px; padding: 0 16px; flex-shrink: 0; }
+.gateway span { color: var(--muted); font-size: 12px; white-space: nowrap; flex-shrink: 0; }
+.gateway strong { max-width: 160px; overflow: hidden; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 3px; color: #dce7eb; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.gateway-status { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 10px; background: rgba(74, 215, 162, 0.08); border: 1px solid rgba(74, 215, 162, 0.22); white-space: nowrap; flex-shrink: 0; }
+.gateway-status i { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+.gateway-status em { color: var(--green); font-size: 12px; font-style: normal; font-weight: 500; white-space: nowrap; }
+.runtime { padding: 0 16px; gap: 16px; flex-shrink: 0; }
+.runtime span { color: var(--muted); font-size: 11px; white-space: nowrap; display: flex; flex-direction: column; gap: 3px; }
+.runtime strong { display: block; margin-top: 0; color: #d2dde1; font: 12px var(--mono); white-space: nowrap; }
+.resources { justify-content: center; gap: 18px; padding: 0 16px; flex: 1; }
+.resources span { color: var(--muted); font-size: 11px; white-space: nowrap; display: flex; flex-direction: column; gap: 3px; }
+.resources strong { display: block; margin-top: 0; color: var(--cyan); font: 12px var(--mono); white-space: nowrap; }
+.account { margin-left: auto; padding: 0 12px; border-right: 0; flex-shrink: 0; gap: 2px; }
+.account button { height: 36px; padding: 0 8px; display: flex; align-items: center; gap: 6px; border: 0; background: transparent; color: #b3c1c8; font-size: 12px; cursor: pointer; white-space: nowrap; }
 .theme-toggle-btn { font-size: 15px !important; transition: transform 0.2s ease; }
 .theme-toggle-btn:hover { transform: scale(1.18) rotate(12deg); }
 .content { padding: 18px 20px 28px; }
@@ -122,6 +145,6 @@ function handleUserAction(key: string) {
 .sidebar.collapsed .collapse { text-align: center; padding-left: 0; }
 .workspace.collapsed { width: calc(100% - 68px); margin-left: 68px; }
 
-@media (max-width: 1050px) { .topbar { grid-template-columns: 1fr auto; }.runtime, .resources { display: none; } }
-@media (max-width: 760px) { .sidebar { width: 68px; }.brand { padding: 0 18px; }.brand strong, .nav button span:nth-child(2), .collapse { display: none; }.nav button { grid-template-columns: 1fr; padding: 0; text-align: center; }.nav-code { text-align: center; }.workspace { width: calc(100% - 68px); margin-left: 68px; }.topbar { height: 50px; grid-template-columns: 1fr; }.gateway { border: 0; }.gateway span, .gateway strong { display: none; }.account { display: none; }.content { padding: 12px; } }
+@media (max-width: 1080px) { .runtime, .resources { display: none; } }
+@media (max-width: 760px) { .sidebar { width: 68px; }.brand { padding: 0 18px; }.brand strong, .nav button span:nth-child(2), .collapse { display: none; }.nav button { grid-template-columns: 1fr; padding: 0; text-align: center; }.nav-code { text-align: center; }.workspace { width: calc(100% - 68px); margin-left: 68px; }.topbar { height: 50px; }.gateway { border: 0; }.gateway span, .gateway strong { display: none; }.account { display: none; }.content { padding: 12px; } }
 </style>

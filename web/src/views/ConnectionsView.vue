@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, h } from 'vue'
 import { useRouter } from 'vue-router'
-import { NButton, NInput, NSelect, NSwitch, NSpace, useMessage, useDialog, NDataTable, NModal, NForm, NFormItem, NP } from 'naive-ui'
+import { NButton, NInput, NSelect, NSwitch, NSpace, useMessage, useDialog, NDataTable, NModal, NForm, NFormItem, NP, type DataTableColumns } from 'naive-ui'
 import {
   listDriverExtensions,
   listConnections,
@@ -155,14 +155,14 @@ function onDelete(id: string) {
   })
 }
 
-const cols = [
-  { title: 'ID', key: 'id', width: 180, render: (c: Connection) => h('code', { class: 'ops-mono', style: 'color:var(--amber);font-size:11px' }, c.id.slice(0, 12) + '…') },
-  { title: t('conn.col_name'), key: 'name' },
+const cols: DataTableColumns<Connection> = [
+  { title: 'ID', key: 'id', width: 160, render: (c: Connection) => h('code', { class: 'ops-mono', style: 'color:var(--amber);font-size:11px' }, c.id.slice(0, 12) + '…') },
+  { title: t('conn.col_name'), key: 'name', minWidth: 160, ellipsis: { tooltip: true }, render: (c: Connection) => h('span', { style: 'font-weight:600;color:var(--text-strong);white-space:nowrap;' }, c.name) },
   { title: t('conn.col_driver'), key: 'driver', width: 140, render: (c: Connection) => h('span', { class: 'ops-tag amber' }, c.driver) },
   {
     title: t('conn.col_status'),
     key: 'status',
-    width: 100,
+    width: 90,
     render: (c: Connection) => {
       if (!c.enabled) return h('span', { class: 'ops-state dead' }, t('devices.status_off'))
       // 从 operations 全局缓存中提取该通道的实时连通性状态
@@ -171,12 +171,12 @@ const cols = [
       return h('span', { class: 'ops-state ' + (connected ? 'live' : 'dead') }, t(connected ? 'devices.status_live' : 'devices.status_off'))
     }
   },
-  { title: t('conn.desc'), key: 'description' },
+  { title: t('conn.desc'), key: 'description', minWidth: 160, ellipsis: { tooltip: true } },
   {
     title: t('conn.col_actions'),
     key: 'action',
-    width: 220,
-    render: (c: Connection) => h(NSpace, {}, () => [
+    width: 180,
+    render: (c: Connection) => h(NSpace, { size: 6, wrap: false }, () => [
       h(NButton, { class: 'ops-mini-button', size: 'small', onClick: () => openEdit(c.id) }, () => t('devices.action_edit')),
       h(NButton, { class: 'ops-mini-button', size: 'small', type: 'error', onClick: () => onDelete(c.id) }, () => t('devices.action_del'))
     ])
@@ -197,7 +197,7 @@ const cols = [
       </div>
     </div>
     
-    <!-- 物理通道运行状态指标条 -->
+	<!-- 南向连接运行状态指标条 -->
     <section class="ops-panel health-panel">
       <div class="health-strip compact">
         <div><span>{{ t('conn.total_count') }}</span><strong>{{ data.connections?.length || 0 }}</strong><small>{{ t('conn.enabled') }} <b>{{ enabledConnections }}</b></small></div>
@@ -208,7 +208,7 @@ const cols = [
     </section>
 
     <div class="ops-table-card">
-      <n-data-table :columns="cols" :data="connections" :bordered="false" :pagination="false" size="small" />
+      <n-data-table :columns="cols" :data="connections" :bordered="false" :pagination="false" size="small" :scroll-x="940" />
     </div>
 
     <!-- 新建 -->
