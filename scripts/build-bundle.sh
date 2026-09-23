@@ -153,13 +153,22 @@ build_one() {
   run_with_retries rm -rf "$bundle" || return 1
   run_with_retries mkdir -p "$bin_dir" "$bundle/bin" || return 1
 
+  # 先删掉已有二进制。Go 会读取 -o 文件里的 build ID，与本次链接动作一致就跳过写出。
+  # UPX 会保留这个 build ID，第二次打包时 go build 不覆盖已压缩文件，
+  # 接着 upx -9 报 AlreadyPackedException。
+  run_with_retries rm -f "${bin_dir}/${exe_name}" || return 1
   run_with_retries env GOMAXPROCS="$GO_BUILD_PARALLELISM" CGO_ENABLED=0 GOOS="$os" GOARCH="${arch}" go build -buildvcs=false -p "$GO_BUILD_PARALLELISM" -ldflags="-s -w -X main.version=${VERSION}" -o "${bin_dir}/${exe_name}" ./cmd/jetlinks-edge || {
     echo "    WARN: build failed for ${os}/${arch}, skipping"
     run_with_retries rm -rf "$bundle" || true
     return 1
   }
 
-  if command -v upx >/dev/null 2>&1; then
+  # UPX 5.x 能识别 macho，但默认拒绝压缩 macOS 二进制
+  # （CantPackException: macOS is currently not supported）。--force-macos
+  # 打出来的 darwin 程序经常无法运行，因此按目标平台直接跳过。
+  if [[ "$os" == "darwin" ]]; then
+    echo "    UPX does not support macOS binaries, skipping compression"
+  elif command -v upx >/dev/null 2>&1; then
     echo "    UPX compressing ${bin_dir}/${exe_name} ..."
     upx -9 "${bin_dir}/${exe_name}" || echo "    WARN: UPX compression failed for ${bin_dir}/${exe_name}, skipping"
   else
@@ -266,7 +275,16 @@ EOF
   run_with_retries cp "$SCRIPT_DIR/install.sh" "$bundle/scripts/" || return 1
   run_with_retries cp "$SCRIPT_DIR/uninstall.sh" "$bundle/scripts/" || return 1
 
-  run_with_retries tar czf "$OUTPUT_DIR/edge-bundle-${os}-${pure_arch}.tar.gz" -C "$OUTPUT_DIR" "edge-bundle-${os}-${pure_arch}" || return 1
+  # macOS 自带 bsdtar。创建归档时默认写入扩展属性，其中 com.apple.provenance
+  # 会变成 pax 头 LIBARCHIVE.xattr.com.apple.provenance。Linux GNU tar 不认识
+  # 该关键字，解压或用 vim 打开 tar.gz 时会打印“忽略未知的扩展头关键字”。
+  # --no-xattrs 去掉这类 pax 头；--no-mac-metadata 与 COPYFILE_DISABLE 去掉
+  # AppleDouble（._*）里的同一份元数据。GNU tar 没有这些选项，且默认不写 xattr。
+  local -a tar_cmd=(tar)
+  if tar --version 2>&1 | grep -q bsdtar; then
+    tar_cmd=(env COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata)
+  fi
+  run_with_retries "${tar_cmd[@]}" -czf "$OUTPUT_DIR/edge-bundle-${os}-${pure_arch}.tar.gz" -C "$OUTPUT_DIR" "edge-bundle-${os}-${pure_arch}" || return 1
   run_with_retries rm -rf "$bundle" || return 1
 }
 
