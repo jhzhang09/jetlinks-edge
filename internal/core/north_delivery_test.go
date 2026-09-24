@@ -28,7 +28,11 @@ func (n *retryNorth) OnMessage(context.Context, NorthMessage) error {
 func TestQueuedNorthRetriesWithoutBlockingProducer(t *testing.T) {
 	target := &retryNorth{done: make(chan struct{})}
 	queued := newQueuedNorth(context.Background(), target)
-	defer queued.Close()
+	t.Cleanup(func() {
+		if err := queued.Close(); err != nil {
+			t.Errorf("close queued north: %v", err)
+		}
+	})
 	start := time.Now()
 	if err := queued.OnMessage(context.Background(), NorthMessage{GroupID: "group-1"}); err != nil {
 		t.Fatal(err)

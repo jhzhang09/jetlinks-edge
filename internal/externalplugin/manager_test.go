@@ -240,7 +240,10 @@ exit 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer adapter.Close()
+	t.Cleanup(func() {
+		// 模拟插件处理消息后会主动退出，Close 可能返回已停止错误。
+		_ = adapter.Close()
+	})
 	if err := adapter.OnMessage(context.Background(), core.NorthMessage{GroupID: "group-1"}); err != nil {
 		t.Fatal(err)
 	}

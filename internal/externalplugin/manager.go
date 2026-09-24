@@ -136,7 +136,11 @@ func (m *Manager) Watch(ctx context.Context, apply func(ChangeSet) error, onErro
 		return err
 	}
 	go func() {
-		defer watcher.Close()
+		defer func() {
+			if err := watcher.Close(); err != nil && onError != nil {
+				onError(fmt.Errorf("close plugin watcher: %w", err))
+			}
+		}()
 		var timer *time.Timer
 		var timerC <-chan time.Time
 		for {

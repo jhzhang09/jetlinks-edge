@@ -58,8 +58,10 @@ func TestLoginRateLimitCountsFailuresAndClearsOnSuccess(t *testing.T) {
 	if call(false) != http.StatusUnauthorized || call(true) != http.StatusOK {
 		t.Fatal("successful login should clear the client failure counter")
 	}
-	if call(false) != http.StatusUnauthorized || call(false) != http.StatusUnauthorized {
-		t.Fatal("first two failed attempts should reach login handler")
+	for attempt := 1; attempt <= 2; attempt++ {
+		if got := call(false); got != http.StatusUnauthorized {
+			t.Fatalf("failed login attempt %d status = %d, want %d", attempt, got, http.StatusUnauthorized)
+		}
 	}
 	if got := call(false); got != http.StatusTooManyRequests {
 		t.Fatalf("third failed attempt status = %d, want %d", got, http.StatusTooManyRequests)
